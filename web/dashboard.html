@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Temu 订单履约与面单管理" />
+    <title>Temu Fulfillment Console</title>
+    <link rel="stylesheet" href="./dashboard.css?v=20260806-1" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-orders" viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/></symbol>
+      <symbol id="i-truck" viewBox="0 0 24 24"><path d="M3 6h11v11H3zM14 10h4l3 3v4h-7zM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM18 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></symbol>
+      <symbol id="i-warehouse" viewBox="0 0 24 24"><path d="m3 10 9-6 9 6v10H3zM7 13h10M7 17h10"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M16 7l3 3M14 9l2 2"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 20h16"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z"/></symbol>
+      <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2 21h20zM12 9v5M12 18h.01"/></symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+      <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand"><span class="brand-mark">T</span><div><strong>Temu Fulfillment</strong><small>Order & Label Console</small></div></div>
+        <nav class="nav" aria-label="主导航">
+          <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
+          <button class="nav-button" data-view="labels"><svg><use href="#i-download"/></svg><span>自动处理中</span><b id="nav-label-count">0</b></button>
+          <button class="nav-button" data-view="exceptions"><svg><use href="#i-alert"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
+          <button class="nav-button" data-view="manual"><svg><use href="#i-alert"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
+          <button class="nav-button" data-view="ledger"><svg><use href="#i-truck"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
+          <button class="nav-button" data-view="shipments"><svg><use href="#i-truck"/></svg><span>发货记录</span></button>
+          <button class="nav-button" data-view="warehouses"><svg><use href="#i-warehouse"/></svg><span>仓库映射</span></button>
+          <button class="nav-button" data-view="tracking-statuses"><svg><use href="#i-orders"/></svg><span>物流状态助手</span></button>
+        </nav>
+        <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-warehouse"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
+      </aside>
+      <button class="backdrop" id="backdrop" aria-label="关闭导航"></button>
+
+      <div class="workspace">
+        <header class="topbar">
+          <button class="icon-button menu-button" id="menu-button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
+          <div class="crumb"><span>Temu</span><b>/</b><strong id="crumb-current">待发货订单</strong></div>
+          <label class="shop-switcher"><small>当前店铺</small><select id="shop-select" aria-label="选择店铺"><option value="panda-homes">PANDA HOMES</option></select></label>
+          <div class="token-pill loading" id="token-pill"><span class="dot"></span><div><small>Access Token</small><strong id="token-text">检查中</strong></div></div>
+        </header>
+
+        <main>
+          <section class="view active" id="view-orders">
+                <div class="page-head"><div><h1>待发货订单</h1><p>按最晚发货时间排序，选择仓库与物流后确认购买面单</p></div><div class="page-actions bulk-actions"><span class="bulk-progress" id="bulk-progress" hidden></span><button class="secondary-button" id="restart-bulk" hidden><svg><use href="#i-refresh"/></svg>重启批次</button><button class="primary-button" id="bulk-fulfill"><svg><use href="#i-truck"/></svg><span id="bulk-fulfill-text">一键发货</span></button><button class="secondary-button" id="sync-orders"><svg><use href="#i-refresh"/></svg>同步订单</button></div></div>
+            <div class="status-band">
+              <div><small>待发货订单</small><strong id="metric-orders">0</strong></div>
+              <div><small>当前页商品件数</small><strong id="metric-units">0</strong></div>
+              <div><small>当前页可选</small><strong id="metric-reserved">0</strong></div>
+              <div><small>最近同步</small><strong class="compact" id="metric-sync">尚未同步</strong></div>
+            </div>
+            <div class="toolbar">
+              <label class="search"><svg><use href="#i-search"/></svg><input id="order-search" type="search" placeholder="搜索父订单、子订单或 SKU" /></label>
+              <span class="table-note" id="order-total">共 0 条</span>
+            </div>
+            <div class="table-shell">
+              <table><thead><tr><th>父订单</th><th>SKU / 数量</th><th>最晚发货</th><th>履约类型</th><th>发货状态</th><th></th></tr></thead><tbody id="order-rows"></tbody></table>
+              <div class="empty" id="orders-empty" hidden><svg><use href="#i-orders"/></svg><strong>没有待发货订单</strong><span>同步 Temu 后，符合条件的订单会显示在这里</span></div>
+            </div>
+            <div class="pager" id="orders-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-labels">
+            <div class="page-head"><div><h1>自动处理中</h1><p>购买面单后，后台自动确认 Temu 并等待领星同步</p></div><button class="secondary-button" id="refresh-labels"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="status-band">
+              <div><small>正在提交</small><strong id="metric-label-submitting">0</strong></div>
+              <div><small>面单生成中</small><strong id="metric-label-pending">0</strong></div>
+              <div><small>面单已就绪</small><strong id="metric-label-ready">0</strong></div>
+              <div><small>处理中总数</small><strong id="metric-label-total">0</strong></div>
+            </div>
+            <div class="table-shell">
+              <table><thead><tr><th>订单</th><th>快递商</th><th>包裹 / 跟踪号</th><th>状态</th><th>领星同步</th><th>创建时间</th></tr></thead><tbody id="label-rows"></tbody></table>
+              <div class="empty" id="labels-empty" hidden><svg><use href="#i-download"/></svg><strong>没有正在处理的面单</strong><span>订单提交购单后会进入这里，不再显示在待发货队列</span></div>
+            </div>
+            <div class="pager" id="labels-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-exceptions">
+            <div class="page-head"><div><h1>自动发货异常</h1><p>自动发货过程中需要关注的异常结果</p></div><button class="secondary-button" id="refresh-exceptions"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="status-band">
+              <div><small>面单确认中</small><strong id="metric-exception-unknown">0</strong></div>
+              <div><small>购单失败</small><strong id="metric-exception-label">0</strong></div>
+              <div><small>确认失败</small><strong id="metric-exception-confirm">0</strong></div>
+              <div><small>异常总数</small><strong id="metric-exception-total">0</strong></div>
+            </div>
+            <div class="table-shell">
+              <table><thead><tr><th>订单</th><th>快递商</th><th>包裹 / 跟踪号</th><th>异常状态</th><th>领星同步</th><th>创建时间</th><th>操作</th></tr></thead><tbody id="exception-rows"></tbody></table>
+              <div class="empty" id="exceptions-empty" hidden><svg><use href="#i-check"/></svg><strong>没有自动发货异常</strong><span>自动流程无法继续的结果会集中显示在这里</span></div>
+            </div>
+            <div class="pager" id="exceptions-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-manual">
+            <div class="page-head"><div><h1>人工订单</h1><p>库存安全线不足、SKU 未绑定、一单多件与 Temu 合并候选集中在此处理</p></div><div class="page-actions"><button class="secondary-button" id="export-manual"><svg><use href="#i-download"/></svg>批量导出 CSV</button><button class="secondary-button" id="refresh-manual"><svg><use href="#i-refresh"/></svg>刷新</button></div></div>
+            <div class="toolbar">
+              <label><select id="manual-status"><option value="">全部处理中</option><option value="detected">待转人工</option><option value="manual_pending">人工处理中</option><option value="approved">已批准自动发货</option></select></label>
+              <span class="table-note" id="manual-total">共 0 条</span>
+            </div>
+            <div class="table-shell">
+              <table><thead><tr><th>订单</th><th>分类</th><th>SKU / 数量</th><th>合并订单</th><th>人工状态</th><th>操作</th></tr></thead><tbody id="manual-rows"></tbody></table>
+              <div class="empty" id="manual-empty" hidden><svg><use href="#i-alert"/></svg><strong>没有待人工订单</strong><span>同步后识别的一单多件与合并候选会显示在这里</span></div>
+            </div>
+            <div class="pager" id="manual-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-shipments">
+            <div class="page-head"><div><h1>发货记录</h1><p>Temu order-detail 历史快照与订单状态变化</p></div><button class="secondary-button" id="refresh-shipments"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="section-title"><h2>订单详情快照</h2><span id="history-total">0 条详情</span></div>
+            <div class="table-shell history-table">
+              <table><thead><tr><th>订单</th><th>SKU / 数量</th><th>区域</th><th>合并标记</th><th>订单状态</th><th>详情时间</th></tr></thead><tbody id="history-rows"></tbody></table>
+              <div class="empty" id="history-empty" hidden><svg><use href="#i-orders"/></svg><strong>还没有订单详情快照</strong><span>后台会增量拉取并保存 order-detail</span></div>
+            </div>
+            <div class="pager" id="history-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-ledger">
+            <div class="page-head"><div><h1>自动发货账本</h1><p>只读记录自动选仓、购单、Temu 确认与领星同步状态，可按仓库和发货时间导出 PO 单号</p></div><div class="page-actions export-actions"><label><small>开始时间</small><input id="export-po-from" type="datetime-local" step="60" /></label><label><small>结束时间</small><input id="export-po-to" type="datetime-local" step="60" /></label><button class="secondary-button" id="export-ledger-po"><svg><use href="#i-download"/></svg>按仓库导出 PO</button><button class="icon-button" id="refresh-ledger" title="刷新账本" aria-label="刷新账本"><svg><use href="#i-refresh"/></svg></button></div></div>
+            <div class="status-band">
+              <div><small>全部账本</small><strong id="metric-ledger-total">0</strong></div>
+              <div><small>处理中</small><strong id="metric-ledger-processing">0</strong></div>
+              <div><small>自动发货异常</small><strong id="metric-ledger-exceptions">0</strong></div>
+              <div><small>已确认发货</small><strong id="metric-ledger-shipped">0</strong></div>
+            </div>
+            <div class="table-shell">
+              <table><thead><tr><th>订单</th><th>快递商</th><th>包裹 / 跟踪号</th><th>状态</th><th>领星同步</th><th>创建时间</th></tr></thead><tbody id="shipment-rows"></tbody></table>
+              <div class="empty" id="shipments-empty" hidden><svg><use href="#i-truck"/></svg><strong>还没有自动发货账本</strong><span>购买面单前系统会先在这里原子占位</span></div>
+            </div>
+            <div class="pager" id="ledger-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-warehouses">
+            <div class="page-head"><div><h1>仓库映射</h1><p>配置业务仓和领星仓库代码；Temu 发货后仅查询领星自动同步结果</p></div><button class="secondary-button" id="sync-warehouses"><svg><use href="#i-refresh"/></svg>同步 Temu 仓库</button></div>
+            <div class="mapping-grid" id="warehouse-mappings"></div>
+            <div class="section-title carrier-policy-heading"><h2>仓库快递优先级</h2><span id="carrier-policy-shop"></span></div>
+            <div class="carrier-policy-grid" id="carrier-policy-grid"></div>
+            <div class="section-title"><h2>Temu 仓库</h2><span id="warehouse-total">0 个仓库</span></div>
+            <div class="table-shell"><table><thead><tr><th>仓库名称</th><th>Temu Warehouse ID</th><th>区域</th><th>管理类型</th><th>Buy Label</th></tr></thead><tbody id="warehouse-rows"></tbody></table></div>
+          </section>
+
+          <section class="view" id="view-tracking-statuses">
+            <div class="page-head"><div><h1>物流状态助手</h1><p>Temu logisticsStatus 原值与内部中文显示映射</p></div></div>
+            <div class="tracking-status-policy">
+              <svg><use href="#i-alert"/></svg>
+              <div><strong>Temu 原始状态保持不变</strong><span>中文仅用于界面显示；未收录的状态直接显示 Temu 原文。</span></div>
+            </div>
+            <div class="toolbar">
+              <label class="search"><svg><use href="#i-search"/></svg><input id="tracking-status-search" type="search" placeholder="搜索 Temu 原值或中文状态" /></label>
+              <span class="table-note" id="tracking-status-total">共 10 条</span>
+            </div>
+            <div class="table-shell tracking-status-table">
+              <table><thead><tr><th>Temu logisticsStatus 原值</th><th>中文显示</th></tr></thead><tbody id="tracking-status-rows"></tbody></table>
+              <div class="empty" id="tracking-status-empty" hidden><svg><use href="#i-search"/></svg><strong>没有匹配的状态</strong><span>请尝试其他英文原值或中文文案</span></div>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+
+    <dialog class="fulfillment-dialog" id="fulfillment-dialog">
+      <form method="dialog" class="dialog-head"><div><small>Temu Buy Label</small><h2 id="fulfillment-title">订单发货</h2></div><button class="icon-button" value="cancel" title="关闭" aria-label="关闭"><svg><use href="#i-close"/></svg></button></form>
+      <div class="dialog-body">
+        <div class="order-summary" id="order-summary"></div>
+        <section class="warehouse-check" id="warehouse-check">
+          <div class="warehouse-check-head"><div><small>领星实时库存</small><h3 id="warehouse-check-title">正在连接领星 Go 服务</h3></div><button class="icon-button" id="refresh-warehouse-preview" type="button" title="重新查询库存" aria-label="重新查询库存"><svg><use href="#i-refresh"/></svg></button></div>
+          <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP美东、DPS004；ARP美西暂不启用</small></div></div>
+          <div id="inventory-matrix" hidden>
+            <div class="inventory-meta"><span id="inventory-rule">安全线</span><span id="inventory-time">查询时间</span></div>
+            <div class="inventory-table"><table><thead><tr><th>SKU / 需发</th><th>DPS002</th><th>ARP美东</th><th>DPS004</th><th>ARP美西（空置）</th><th>规则结论</th></tr></thead><tbody id="inventory-preview-rows"></tbody></table></div>
+            <div class="warehouse-region-options" id="warehouse-region-options"></div>
+            <button class="secondary-button mapping-link" id="open-warehouse-mappings" type="button" hidden>配置仓库映射</button>
+          </div>
+        </section>
+        <section class="package-spec-panel" id="package-spec-panel" hidden>
+          <div class="package-spec-head"><div><small>仓库 SKU 刚性匹配</small><h3 id="package-spec-title">正在解析包裹规格</h3></div><span class="status-badge neutral" id="package-spec-badge">待校验</span></div>
+          <div class="package-spec-items" id="package-spec-items"></div>
+        </section>
+        <form id="quote-form" hidden>
+          <div class="auto-query-status pending" id="quote-status"><span class="dot warning"></span><strong>等待库存与规格校验</strong><button class="icon-button" id="retry-quote" type="button" title="重新查询物流渠道" aria-label="重新查询物流渠道" hidden><svg><use href="#i-refresh"/></svg></button></div>
+        </form>
+        <section id="quote-result" hidden>
+          <div class="decision-line" id="warehouse-decision"></div>
+          <div class="section-title"><h3>可用物流渠道</h3><span id="quote-expiry"></span></div>
+          <div class="channel-meta" id="channel-count">0 个可用</div>
+          <div class="channel-list" id="channel-list"></div>
+          <div class="unavailable-channels" id="unavailable-channels" hidden>
+            <div class="unavailable-channel-head"><h3>不可用物流渠道</h3><b id="unavailable-channel-count">0 个不可用</b></div>
+            <div class="unavailable-channel-list" id="unavailable-channel-list"></div>
+          </div>
+          <button class="danger-button full-button" id="purchase-button" type="button">确认并购买面单</button>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog class="key-dialog" id="key-dialog">
+      <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
+    </dialog>
+    <div class="toast" id="toast" hidden></div>
+    <script src="./dashboard.js?v=20260806-1" defer></script>
+  </body>
+</html>
