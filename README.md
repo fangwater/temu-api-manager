@@ -11,6 +11,114 @@ confirms the Temu shipment, and then waits for read-only XLWMS verification.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
+## Label Purchase Price Analysis
+
+The Go fulfillment service stores a new, immutable price snapshot when a quote
+actually enters a Buy Label transaction. Quote previews that are never
+purchased are not included. The data is private per shop schema, for example
+`temu_panda_homes` and `temu_panda_buy`.
+
+The relationship is:
+
+```text
+temu_shipping_quotes (1) -> (0..1) temu_label_purchase_choices
+temu_label_purchase_choices (1) -> (1..3) temu_label_purchase_candidates
+temu_label_purchase_choices (many) -> (1) temu_shipments
+```
+
+A recovery can create another quote and choice row for the same shipment.
+Repeated submission of the same quote does not duplicate its choice snapshot.
+
+### `temu_label_purchase_choices`
+
+This is the analysis header. It contains one row per quote that entered a
+purchase transaction and always stores the final selected option, including
+when that option is outside the three lowest prices.
+
+| Column | Stored data |
+| --- | --- |
+| `quote_id` | Primary key and the source quote ID. |
+| `shipment_id` | Shipment ledger ID. Join this to `temu_shipments` for purchase result and current status. |
+| `parent_order_sn` | Temu parent order number. |
+| `selection_source` | `automatic` for the carrier-rule result or `manual` for an operator-selected channel. |
+| `selected_price_rank` | `1`, `2`, or `3` when the selected option is in the low-price Top 3; `NULL` when it is outside the Top 3. |
+| `selected_oms_warehouse_key` | Logical OMS warehouse used by the selected option, such as `DPS002` or `ARP_EAST`. |
+| `selected_temu_warehouse_id` | Temu warehouse ID used in the shipping request. |
+| `selected_channel_id` | Temu logistics channel ID. |
+| `selected_ship_company_id` | Temu shipping-company ID. |
+| `selected_carrier_code` | Normalized carrier code, such as `GOFO`, `SWIFTX`, or `UPS`. |
+| `selected_company_name` | Shipping-company name returned by Temu. |
+| `selected_logistics_type` | Logistics service type returned by Temu. |
+| `selected_estimated_amount` | Selected live shipping price as `numeric(18,4)`. |
+| `selected_currency_code` | Currency returned by Temu, normally `USD`; empty means Temu omitted it. |
+| `selection_reason` | Selection-rule explanation captured at quote time. |
+| `purchased_at` | Time the purchase transaction reserved the selection snapshot. |
+
+### `temu_label_purchase_candidates`
+
+This is the Top 3 detail table. It contains one to three rows for each
+`quote_id`, ranked by eligible live shipping price across all quoted
+warehouses.
+
+| Column | Stored data |
+| --- | --- |
+| `quote_id` | Foreign key to `temu_label_purchase_choices.quote_id`. |
+| `price_rank` | Low-price rank `1` through `3`; together with `quote_id` it is the primary key. |
+| `oms_warehouse_key` | Logical OMS warehouse for this candidate. |
+| `temu_warehouse_id` | Temu warehouse ID for this candidate. |
+| `channel_id` | Temu logistics channel ID. |
+| `ship_company_id` | Temu shipping-company ID. |
+| `carrier_code` | Normalized carrier code. |
+| `shipping_company_name` | Shipping-company name returned by Temu. |
+| `ship_logistics_type` | Logistics service type returned by Temu. |
+| `estimated_amount` | Candidate live shipping price as `numeric(18,4)`. |
+| `currency_code` | Currency returned by Temu, normally `USD`. |
+| `is_selected` | `true` only when this ranked candidate is the final selection. All three rows are `false` when the final selection is outside the Top 3. |
+
+### Snapshot Rules
+
+1. Candidates are collected after the automatic whitelist, no-signature,
+   comparable-price/currency, per-warehouse carrier enablement, and failed
+   carrier exclusion rules have been applied.
+2. The Top 3 is sorted strictly by estimated amount across all eligible
+   warehouses. Existing deterministic tie-breaking applies: DPS before ARP at
+   the same price, then lower channel ID.
+3. The final option is selected separately by the current manual or automatic
+   carrier-priority rule. The automatic rule can select an option up to USD
+   0.50 above the minimum, so the selected option is not guaranteed to be in
+   the low-price Top 3.
+4. The header and candidate rows are written atomically with shipment
+   reservation or recovery. A row means a Buy Label call was prepared, not
+   necessarily that Temu successfully produced a label. Join
+   `temu_shipments.status` through `shipment_id` to analyze outcomes.
+5. Historical quotes and shipments are not backfilled because their complete
+   cross-warehouse candidate set cannot be reconstructed. Legacy quotes remain
+   purchasable but do not create fabricated analysis rows.
+
+Example price-premium query for the current shop schema:
+
+```sql
+SELECT
+    choice.parent_order_sn,
+    choice.purchased_at,
+    choice.selected_carrier_code,
+    choice.selected_price_rank,
+    choice.selected_estimated_amount,
+    min(candidate.estimated_amount) AS lowest_eligible_amount,
+    choice.selected_estimated_amount - min(candidate.estimated_amount)
+        AS selected_price_premium
+FROM temu_label_purchase_choices choice
+JOIN temu_label_purchase_candidates candidate USING (quote_id)
+GROUP BY
+    choice.quote_id,
+    choice.parent_order_sn,
+    choice.purchased_at,
+    choice.selected_carrier_code,
+    choice.selected_price_rank,
+    choice.selected_estimated_amount
+ORDER BY choice.purchased_at DESC;
+```
+
 ## Setup
 
 ```bash

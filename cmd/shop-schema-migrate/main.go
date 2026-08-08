@@ -27,6 +27,8 @@ var privateTables = []string{
 	"temu_shipments",
 	"temu_shipment_orders",
 	"temu_shipment_events",
+	"temu_label_purchase_choices",
+	"temu_label_purchase_candidates",
 	"temu_oms_sync_checks",
 	"temu_auto_fulfillment_jobs",
 	"temu_bulk_fulfillment_batches",

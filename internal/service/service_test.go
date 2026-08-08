@@ -135,7 +135,7 @@ func TestRecoveryExcludedCarrierCodesIncludesCurrentCarrier(t *testing.T) {
 
 func candidate(id int64, warehouseKey, carrier, amount string) autoChannelCandidate {
 	item := autoChannelCandidate{
-		warehouseKey: warehouseKey, amount: price(amount),
+		warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, amount: price(amount),
 		channel: temu.ShippingChannel{ChannelID: id, ShipCompanyID: id + 100, ShippingCompanyName: carrier, EstimatedAmount: amount, EstimatedCurrencyCode: "USD"},
 	}
 	item.priority = configuredCarrierPriority(defaultCarrierPolicies(warehouseKey), carrierCode(item.channel))
@@ -220,6 +220,47 @@ func TestSelectAutomaticChannelUsesWarehouseSpecificPriority(t *testing.T) {
 	}
 	if selected.warehouseKey != "ARP_EAST" || carrierCode(selected.channel) != "SPEEDX" {
 		t.Fatalf("warehouse-specific priority was not applied: %#v", selected)
+	}
+}
+
+func TestBuildLabelPurchaseChoiceStoresTopThreeLowestPricesAndFinalSelection(t *testing.T) {
+	candidates := []autoChannelCandidate{
+		candidate(1, "ARP_EAST", "UPS", "$9.00"),
+		candidate(2, "DPS002", "SpeedX", "$9.00"),
+		candidate(3, "DPS004", "USPS", "$9.20"),
+		candidate(4, "ARP_WEST", "GOFO", "$9.40"),
+	}
+	selected, reason, err := selectAutomaticChannel(candidates, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.channel.ChannelID != 4 {
+		t.Fatalf("expected priority rule to select GOFO outside the price Top 3, got %#v", selected)
+	}
+
+	choice := buildLabelPurchaseChoice(candidates, selected, reason, false)
+	if choice.SelectionSource != "automatic" || choice.Selected.ChannelID != 4 || choice.Selected.PriceRank != 0 {
+		t.Fatalf("unexpected selected choice: %#v", choice)
+	}
+	if len(choice.TopCandidates) != 3 {
+		t.Fatalf("TopCandidates length = %d, want 3", len(choice.TopCandidates))
+	}
+	wantIDs := []int64{2, 1, 3}
+	for index, candidate := range choice.TopCandidates {
+		if candidate.PriceRank != index+1 || candidate.ChannelID != wantIDs[index] {
+			t.Fatalf("candidate %d = %#v, want channel %d at rank %d", index, candidate, wantIDs[index], index+1)
+		}
+	}
+}
+
+func TestBuildLabelPurchaseChoiceMarksManualSelectionRank(t *testing.T) {
+	candidates := []autoChannelCandidate{
+		candidate(1, "ARP_EAST", "UPS", "$9.00"),
+		candidate(2, "DPS002", "SpeedX", "$9.10"),
+	}
+	choice := buildLabelPurchaseChoice(candidates, candidates[1], "manual", true)
+	if choice.SelectionSource != "manual" || choice.Selected.PriceRank != 2 {
+		t.Fatalf("unexpected manual choice: %#v", choice)
 	}
 }
 

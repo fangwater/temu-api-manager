@@ -810,10 +810,11 @@ type QuoteResult struct {
 }
 
 type storedQuoteRequest struct {
-	Package            model.PackageSpec    `json:"package"`
-	ShippingRequest    map[string]any       `json:"shipping_request"`
-	SelectedChannel    temu.ShippingChannel `json:"selected_channel"`
-	RecoveryShipmentID string               `json:"recovery_shipment_id,omitempty"`
+	Package            model.PackageSpec         `json:"package"`
+	ShippingRequest    map[string]any            `json:"shipping_request"`
+	SelectedChannel    temu.ShippingChannel      `json:"selected_channel"`
+	RecoveryShipmentID string                    `json:"recovery_shipment_id,omitempty"`
+	ChoiceAnalysis     model.LabelPurchaseChoice `json:"choice_analysis,omitempty"`
 }
 
 func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult, error) {
@@ -966,11 +967,12 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		index := len(quoted) - 1
 		for _, channel := range eligible {
 			candidates = append(candidates, autoChannelCandidate{
-				warehouseIndex: index,
-				warehouseKey:   result.selection.WarehouseKey,
-				channel:        channel,
-				amount:         price(channel.EstimatedAmount),
-				priority:       configuredCarrierPriority(warehousePolicies[result.selection.WarehouseKey], carrierCode(channel)),
+				warehouseIndex:  index,
+				warehouseKey:    result.selection.WarehouseKey,
+				temuWarehouseID: result.warehouse.ID,
+				channel:         channel,
+				amount:          price(channel.EstimatedAmount),
+				priority:        configuredCarrierPriority(warehousePolicies[result.selection.WarehouseKey], carrierCode(channel)),
 			})
 		}
 	}
@@ -990,6 +992,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 			reason += "；仓库选择以实时运费优先于 DPS 清货"
 		}
 	}
+	choiceAnalysis := buildLabelPurchaseChoice(candidates, choice, reason, request.PreferredChannelID != 0)
 	selectedWarehouse.Reason = reason
 	for i := range selectedResult.channels.Available {
 		if selectedResult.channels.Available[i].ChannelID == choice.channel.ChannelID {
@@ -997,7 +1000,10 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 			selectedResult.channels.Available[i].SelectionReason = reason
 		}
 	}
-	requestRecord, _ := json.Marshal(storedQuoteRequest{Package: packageSpec, ShippingRequest: selectedResult.shippingRequest, SelectedChannel: choice.channel, RecoveryShipmentID: request.RecoveryShipmentID})
+	requestRecord, _ := json.Marshal(storedQuoteRequest{
+		Package: packageSpec, ShippingRequest: selectedResult.shippingRequest, SelectedChannel: choice.channel,
+		RecoveryShipmentID: request.RecoveryShipmentID, ChoiceAnalysis: choiceAnalysis,
+	})
 	responseRecord, _ := json.Marshal(map[string]any{"temu_raw": json.RawMessage(selectedResult.raw), "available": selectedResult.channels.Available, "unavailable": selectedResult.channels.Unavailable})
 	selectedRegion := request.Region
 	if selectedRegion == "auto" || selectedRegion == "" {
@@ -1027,11 +1033,12 @@ type warehouseQuoteResult struct {
 }
 
 type autoChannelCandidate struct {
-	warehouseIndex int
-	warehouseKey   string
-	channel        temu.ShippingChannel
-	amount         float64
-	priority       int
+	warehouseIndex  int
+	warehouseKey    string
+	temuWarehouseID string
+	channel         temu.ShippingChannel
+	amount          float64
+	priority        int
 }
 
 var supportedAutomaticCarrierCodes = []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"}
@@ -1210,6 +1217,48 @@ func hasEqualPriceARPChoice(candidates []autoChannelCandidate, selected autoChan
 	}
 	return false
 }
+func buildLabelPurchaseChoice(candidates []autoChannelCandidate, selected autoChannelCandidate, reason string, manual bool) model.LabelPurchaseChoice {
+	selectionSource := "automatic"
+	if manual {
+		selectionSource = "manual"
+	}
+	result := model.LabelPurchaseChoice{
+		SelectionSource: selectionSource,
+		SelectionReason: reason,
+		Selected:        labelPurchaseCandidate(selected, 0),
+	}
+	items := append([]autoChannelCandidate(nil), candidates...)
+	sort.SliceStable(items, func(i, j int) bool { return betterChannelCandidate(items[i], items[j]) })
+	if len(items) > 3 {
+		items = items[:3]
+	}
+	result.TopCandidates = make([]model.LabelPurchaseCandidate, 0, len(items))
+	for index, item := range items {
+		candidate := labelPurchaseCandidate(item, index+1)
+		result.TopCandidates = append(result.TopCandidates, candidate)
+		if sameChannelCandidate(item, selected) {
+			result.Selected.PriceRank = candidate.PriceRank
+		}
+	}
+	return result
+}
+
+func labelPurchaseCandidate(item autoChannelCandidate, rank int) model.LabelPurchaseCandidate {
+	return model.LabelPurchaseCandidate{
+		PriceRank: rank, OMSWarehouseKey: item.warehouseKey, TemuWarehouseID: item.temuWarehouseID,
+		ChannelID: item.channel.ChannelID, ShipCompanyID: item.channel.ShipCompanyID,
+		CarrierCode: carrierCode(item.channel), ShippingCompanyName: item.channel.ShippingCompanyName,
+		ShipLogisticsType: item.channel.ShipLogisticsType, EstimatedAmount: fmt.Sprintf("%.4f", item.amount),
+		EstimatedCurrencyCode: strings.ToUpper(strings.TrimSpace(item.channel.EstimatedCurrencyCode)),
+	}
+}
+
+func sameChannelCandidate(left, right autoChannelCandidate) bool {
+	return left.warehouseKey == right.warehouseKey &&
+		left.channel.ChannelID == right.channel.ChannelID &&
+		left.channel.ShipCompanyID == right.channel.ShipCompanyID
+}
+
 func shipmentRetryable(shipment model.Shipment) bool {
 	return len(shipment.PackageSNList) == 0 && (shipment.Status == "submission_unknown" || shipment.Status == "label_failed")
 }
@@ -1284,7 +1333,7 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 		WarehouseID: quote.TemuWarehouseID, ChannelID: quote.ChannelID, ShipCompanyID: quote.ShipCompanyID,
 		ShippingCompanyName: quote.ShippingCompanyName, ShipLogisticsType: quote.ShipLogisticsType,
 		RequestPayload: requestRaw, ParentOrderSN: order.ParentOrderSN}
-	reserved, duplicate, err := s.store.ReserveShipment(ctx, shipment)
+	reserved, duplicate, err := s.store.ReserveShipment(ctx, shipment, saved.ChoiceAnalysis)
 	if err != nil {
 		return PurchaseResult{}, err
 	}
@@ -1304,7 +1353,7 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 			updated, err := s.store.GetShipment(ctx, reserved.ID)
 			return PurchaseResult{Shipment: updated, Duplicate: true}, err
 		}
-		if err := s.store.PrepareShipmentRetry(ctx, reserved.ID, shipment); err != nil {
+		if err := s.store.PrepareShipmentRetry(ctx, reserved.ID, shipment, saved.ChoiceAnalysis); err != nil {
 			return PurchaseResult{}, errors.New("发货记录状态已变化，请刷新后重试")
 		}
 		reserved, err = s.store.GetShipment(ctx, reserved.ID)
@@ -1466,7 +1515,7 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 		ShippingCompanyName: shipment.ShippingCompanyName,
 		ShipLogisticsType:   shipment.ShipLogisticsType,
 	})
-	if err := s.store.PrepareFailedShipmentRecovery(ctx, shipment.ID, replacement, currentCarrier); err != nil {
+	if err := s.store.PrepareFailedShipmentRecovery(ctx, shipment.ID, replacement, saved.ChoiceAnalysis, currentCarrier); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PurchaseResult{}, errors.New("shipment status changed; refresh before resubmitting")
 		}

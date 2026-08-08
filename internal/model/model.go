@@ -217,6 +217,26 @@ type Quote struct {
 	CreatedAt           time.Time       `json:"created_at"`
 }
 
+type LabelPurchaseCandidate struct {
+	PriceRank             int    `json:"price_rank,omitempty"`
+	OMSWarehouseKey       string `json:"oms_warehouse_key"`
+	TemuWarehouseID       string `json:"temu_warehouse_id"`
+	ChannelID             int64  `json:"channel_id"`
+	ShipCompanyID         int64  `json:"ship_company_id"`
+	CarrierCode           string `json:"carrier_code"`
+	ShippingCompanyName   string `json:"shipping_company_name"`
+	ShipLogisticsType     string `json:"ship_logistics_type"`
+	EstimatedAmount       string `json:"estimated_amount"`
+	EstimatedCurrencyCode string `json:"estimated_currency_code"`
+}
+
+type LabelPurchaseChoice struct {
+	SelectionSource string                   `json:"selection_source"`
+	SelectionReason string                   `json:"selection_reason"`
+	Selected        LabelPurchaseCandidate   `json:"selected"`
+	TopCandidates   []LabelPurchaseCandidate `json:"top_candidates"`
+}
+
 type Shipment struct {
 	ID                   string          `json:"id"`
 	QuoteID              string          `json:"quote_id"`

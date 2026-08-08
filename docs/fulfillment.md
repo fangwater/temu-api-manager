@@ -15,7 +15,7 @@ are never returned by HTTP APIs.
 6. Carrier selection uses an explicitly selected channel, the current shop and OMS warehouse policy, then estimated cost.
    Each shop configures an independent priority and enabled state for every supported carrier in each OMS warehouse. Automatic selection applies that warehouse's priority within USD 0.50 of the live minimum; a disabled carrier cannot be selected manually or automatically.
    Carrier lookup starts automatically after warehouse validation. Both available and unavailable Temu channels are returned; the dashboard directly lists every unavailable channel with its reason.
-7. Before `bg.logistics.shipment.create`, PostgreSQL reserves every parent order with a unique primary key.
+7. Before `bg.logistics.shipment.create`, PostgreSQL reserves every parent order with a unique primary key. The same transaction stores the final selected channel in `temu_label_purchase_choices` and the three lowest-priced eligible cross-warehouse candidates in `temu_label_purchase_candidates`. Only quotes that enter a purchase transaction are recorded. Existing historical quotes are not backfilled; a legacy quote without the embedded choice snapshot remains purchasable but creates no fabricated analysis row.
 8. Buy Label uses `shipLater=true`; label state is reconciled with `bg.logistics.shipment.result.get`.
 9. Labels are downloaded server-side through `bg.logistics.shipment.document.get` and signed document headers.
 10. Actual handoff is confirmed separately with `bg.logistics.shipped.package.confirm`.

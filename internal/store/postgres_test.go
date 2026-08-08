@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -56,5 +57,22 @@ func TestAutoFulfillmentClaimOrderPrioritizesInFlightWork(t *testing.T) {
 func TestLogicalWarehouseKeyFallback(t *testing.T) {
 	if got := logicalWarehouseKey(model.Warehouse{ID: "wh-123"}); got != "TEMU_WH-123" {
 		t.Fatalf("logicalWarehouseKey fallback = %q", got)
+	}
+}
+
+func TestRecordLabelPurchaseChoiceAllowsLegacyQuoteWithoutSnapshot(t *testing.T) {
+	if err := recordLabelPurchaseChoice(context.Background(), nil, "legacy-quote", "shipment", "order", model.LabelPurchaseChoice{}); err != nil {
+		t.Fatalf("legacy quote without analysis must be skipped: %v", err)
+	}
+}
+
+func TestValidateLabelPurchaseAmountRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"", "-0.01", "NaN", "Inf"} {
+		if err := validateLabelPurchaseAmount(value); err == nil {
+			t.Fatalf("validateLabelPurchaseAmount(%q) unexpectedly succeeded", value)
+		}
+	}
+	if err := validateLabelPurchaseAmount("10.2500"); err != nil {
+		t.Fatalf("valid amount rejected: %v", err)
 	}
 }

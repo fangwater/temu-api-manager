@@ -237,6 +237,49 @@ CREATE TABLE IF NOT EXISTS temu_shipment_events (
 );
 
 
+CREATE TABLE IF NOT EXISTS temu_label_purchase_choices (
+    quote_id text PRIMARY KEY REFERENCES temu_shipping_quotes(id) ON DELETE CASCADE,
+    shipment_id text NOT NULL REFERENCES temu_shipments(id) ON DELETE CASCADE,
+    parent_order_sn text NOT NULL REFERENCES temu_orders(parent_order_sn),
+    selection_source text NOT NULL CHECK (selection_source IN ('automatic', 'manual')),
+    selected_price_rank smallint CHECK (selected_price_rank BETWEEN 1 AND 3),
+    selected_oms_warehouse_key text NOT NULL,
+    selected_temu_warehouse_id text NOT NULL,
+    selected_channel_id bigint NOT NULL,
+    selected_ship_company_id bigint NOT NULL,
+    selected_carrier_code text NOT NULL DEFAULT '',
+    selected_company_name text NOT NULL DEFAULT '',
+    selected_logistics_type text NOT NULL DEFAULT '',
+    selected_estimated_amount numeric(18,4) NOT NULL CHECK (selected_estimated_amount >= 0),
+    selected_currency_code text NOT NULL DEFAULT '',
+    selection_reason text NOT NULL DEFAULT '',
+    purchased_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS temu_label_purchase_choices_parent_idx
+    ON temu_label_purchase_choices(parent_order_sn, purchased_at DESC);
+CREATE INDEX IF NOT EXISTS temu_label_purchase_choices_shipment_idx
+    ON temu_label_purchase_choices(shipment_id, purchased_at DESC);
+
+CREATE TABLE IF NOT EXISTS temu_label_purchase_candidates (
+    quote_id text NOT NULL REFERENCES temu_label_purchase_choices(quote_id) ON DELETE CASCADE,
+    price_rank smallint NOT NULL CHECK (price_rank BETWEEN 1 AND 3),
+    oms_warehouse_key text NOT NULL,
+    temu_warehouse_id text NOT NULL,
+    channel_id bigint NOT NULL,
+    ship_company_id bigint NOT NULL,
+    carrier_code text NOT NULL DEFAULT '',
+    shipping_company_name text NOT NULL DEFAULT '',
+    ship_logistics_type text NOT NULL DEFAULT '',
+    estimated_amount numeric(18,4) NOT NULL CHECK (estimated_amount >= 0),
+    currency_code text NOT NULL DEFAULT '',
+    is_selected boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (quote_id, price_rank)
+);
+
+CREATE INDEX IF NOT EXISTS temu_label_purchase_candidates_carrier_idx
+    ON temu_label_purchase_candidates(carrier_code, estimated_amount, price_rank);
+
 ALTER TABLE IF EXISTS temu_oms_dispatches RENAME TO temu_oms_sync_checks;
 
 CREATE TABLE IF NOT EXISTS temu_oms_sync_checks (

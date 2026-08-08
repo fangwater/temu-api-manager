@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -581,7 +583,83 @@ func (p *Postgres) GetQuote(ctx context.Context, id string) (model.Quote, error)
 	return q, err
 }
 
-func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment) (model.Shipment, bool, error) {
+func recordLabelPurchaseChoice(ctx context.Context, tx pgx.Tx, quoteID, shipmentID, parentOrderSN string, choice model.LabelPurchaseChoice) error {
+	if choice.Selected.ChannelID == 0 && len(choice.TopCandidates) == 0 {
+		return nil
+	}
+	if choice.SelectionSource != "automatic" && choice.SelectionSource != "manual" {
+		return errors.New("stored quote choice analysis has an invalid selection source")
+	}
+	if choice.Selected.ChannelID == 0 || choice.Selected.OMSWarehouseKey == "" || choice.Selected.TemuWarehouseID == "" {
+		return errors.New("stored quote choice analysis is missing the selected channel")
+	}
+	if len(choice.TopCandidates) == 0 || len(choice.TopCandidates) > 3 {
+		return errors.New("stored quote choice analysis must contain one to three candidates")
+	}
+	if err := validateLabelPurchaseAmount(choice.Selected.EstimatedAmount); err != nil {
+		return fmt.Errorf("invalid selected shipping amount: %w", err)
+	}
+	var selectedRank any
+	if choice.Selected.PriceRank > 0 {
+		if choice.Selected.PriceRank > len(choice.TopCandidates) || !sameLabelPurchaseCandidate(choice.Selected, choice.TopCandidates[choice.Selected.PriceRank-1]) {
+			return errors.New("stored quote choice analysis has an invalid selected price rank")
+		}
+		selectedRank = choice.Selected.PriceRank
+	}
+	_, err := tx.Exec(ctx, `
+INSERT INTO temu_label_purchase_choices(
+    quote_id,shipment_id,parent_order_sn,selection_source,selected_price_rank,
+    selected_oms_warehouse_key,selected_temu_warehouse_id,selected_channel_id,
+    selected_ship_company_id,selected_carrier_code,selected_company_name,
+    selected_logistics_type,selected_estimated_amount,selected_currency_code,selection_reason
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::numeric,$14,$15)
+ON CONFLICT(quote_id) DO NOTHING
+`, quoteID, shipmentID, parentOrderSN, choice.SelectionSource, selectedRank,
+		choice.Selected.OMSWarehouseKey, choice.Selected.TemuWarehouseID, choice.Selected.ChannelID,
+		choice.Selected.ShipCompanyID, choice.Selected.CarrierCode, choice.Selected.ShippingCompanyName,
+		choice.Selected.ShipLogisticsType, choice.Selected.EstimatedAmount,
+		choice.Selected.EstimatedCurrencyCode, choice.SelectionReason)
+	if err != nil {
+		return err
+	}
+	for index, candidate := range choice.TopCandidates {
+		if candidate.PriceRank != index+1 || candidate.ChannelID == 0 || candidate.OMSWarehouseKey == "" || candidate.TemuWarehouseID == "" {
+			return errors.New("stored quote choice analysis has an invalid Top 3 candidate")
+		}
+		if err := validateLabelPurchaseAmount(candidate.EstimatedAmount); err != nil {
+			return fmt.Errorf("invalid candidate shipping amount at rank %d: %w", candidate.PriceRank, err)
+		}
+		_, err = tx.Exec(ctx, `
+INSERT INTO temu_label_purchase_candidates(
+    quote_id,price_rank,oms_warehouse_key,temu_warehouse_id,channel_id,ship_company_id,
+    carrier_code,shipping_company_name,ship_logistics_type,estimated_amount,currency_code,is_selected
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::numeric,$11,$12)
+ON CONFLICT(quote_id,price_rank) DO NOTHING
+`, quoteID, candidate.PriceRank, candidate.OMSWarehouseKey, candidate.TemuWarehouseID,
+			candidate.ChannelID, candidate.ShipCompanyID, candidate.CarrierCode,
+			candidate.ShippingCompanyName, candidate.ShipLogisticsType, candidate.EstimatedAmount,
+			candidate.EstimatedCurrencyCode, choice.Selected.PriceRank == candidate.PriceRank)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateLabelPurchaseAmount(raw string) error {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return errors.New("amount must be a finite non-negative number")
+	}
+	return nil
+}
+
+func sameLabelPurchaseCandidate(left, right model.LabelPurchaseCandidate) bool {
+	return left.OMSWarehouseKey == right.OMSWarehouseKey &&
+		left.ChannelID == right.ChannelID && left.ShipCompanyID == right.ShipCompanyID
+}
+
+func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment, choice model.LabelPurchaseChoice) (model.Shipment, bool, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return model.Shipment{}, false, err
@@ -607,6 +685,9 @@ func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment)
 		}
 		return model.Shipment{}, false, err
 	}
+	if err = recordLabelPurchaseChoice(ctx, tx, shipment.QuoteID, shipment.ID, shipment.ParentOrderSN, choice); err != nil {
+		return model.Shipment{}, false, err
+	}
 	if _, err = tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type) VALUES($1,'submission_reserved')`, shipment.ID); err != nil {
 		return model.Shipment{}, false, err
 	}
@@ -617,7 +698,7 @@ func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment)
 	return created, false, err
 }
 
-func (p *Postgres) PrepareShipmentRetry(ctx context.Context, id string, replacement model.Shipment) error {
+func (p *Postgres) PrepareShipmentRetry(ctx context.Context, id string, replacement model.Shipment, choice model.LabelPurchaseChoice) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -630,6 +711,9 @@ func (p *Postgres) PrepareShipmentRetry(ctx context.Context, id string, replacem
 	if tag.RowsAffected() != 1 {
 		return pgx.ErrNoRows
 	}
+	if err := recordLabelPurchaseChoice(ctx, tx, replacement.QuoteID, id, replacement.ParentOrderSN, choice); err != nil {
+		return err
+	}
 	payload, _ := json.Marshal(map[string]string{"quote_id": replacement.QuoteID})
 	if _, err := tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'submission_retry_reserved',$2)`, id, payload); err != nil {
 		return err
@@ -637,7 +721,7 @@ func (p *Postgres) PrepareShipmentRetry(ctx context.Context, id string, replacem
 	return tx.Commit(ctx)
 }
 
-func (p *Postgres) PrepareFailedShipmentRecovery(ctx context.Context, id string, replacement model.Shipment, failedCarrierCode string) error {
+func (p *Postgres) PrepareFailedShipmentRecovery(ctx context.Context, id string, replacement model.Shipment, choice model.LabelPurchaseChoice, failedCarrierCode string) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -687,6 +771,9 @@ WHERE id=$1 AND status='label_failed' AND tracking_number='' AND confirmed_at IS
 	}
 	if tag.RowsAffected() != 1 {
 		return pgx.ErrNoRows
+	}
+	if err := recordLabelPurchaseChoice(ctx, tx, replacement.QuoteID, id, replacement.ParentOrderSN, choice); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'operator_recovery_reserved',$2)`, id, payload); err != nil {
 		return err

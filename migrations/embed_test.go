@@ -69,3 +69,17 @@ func TestInitSQLIncludesShopWarehouseCarrierPolicies(t *testing.T) {
 		}
 	}
 }
+
+func TestInitSQLIncludesLabelPurchaseChoiceAnalysis(t *testing.T) {
+	for _, fragment := range []string{
+		"temu_label_purchase_choices",
+		"selected_price_rank smallint",
+		"temu_label_purchase_candidates",
+		"price_rank BETWEEN 1 AND 3",
+		"is_selected boolean",
+	} {
+		if !strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL is missing %q", fragment)
+		}
+	}
+}
