@@ -2263,6 +2263,56 @@ func (s *Service) GetShipment(ctx context.Context, id string) (model.Shipment, e
 	return s.store.GetShipment(ctx, id)
 }
 
+func (s *Service) ShipmentForOrder(ctx context.Context, parentOrderSN string) (model.Shipment, error) {
+	parentOrderSN = strings.TrimSpace(parentOrderSN)
+	if parentOrderSN == "" {
+		return model.Shipment{}, errors.New("parentOrderSn is required")
+	}
+	return s.store.ShipmentForOrder(ctx, parentOrderSN)
+}
+
+func (s *Service) ShipmentsForOrders(ctx context.Context, parentOrderSNs []string) ([]model.Shipment, error) {
+	parentOrderSNs, err := normalizeParentOrderSNs(parentOrderSNs)
+	if err != nil {
+		return nil, err
+	}
+	shipments := make([]model.Shipment, 0, len(parentOrderSNs))
+	for _, parentOrderSN := range parentOrderSNs {
+		shipment, lookupErr := s.store.ShipmentForOrder(ctx, parentOrderSN)
+		if errors.Is(lookupErr, pgx.ErrNoRows) {
+			continue
+		}
+		if lookupErr != nil {
+			return nil, fmt.Errorf("shipment for order %s: %w", parentOrderSN, lookupErr)
+		}
+		shipments = append(shipments, shipment)
+	}
+	return shipments, nil
+}
+
+func normalizeParentOrderSNs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, errors.New("parent_order_sns is required")
+	}
+	if len(values) > 50 {
+		return nil, errors.New("at most 50 parent order numbers may be queried")
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 100 || strings.ContainsAny(value, "\r\n\t") {
+			return nil, errors.New("invalid parent order number")
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 func (s *Service) PackageTracking(ctx context.Context, packageSN, language string) (temu.TrackingInfoResult, error) {
 	packageSN = strings.TrimSpace(packageSN)
 	if packageSN == "" {

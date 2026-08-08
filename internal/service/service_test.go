@@ -13,6 +13,22 @@ import (
 	"temu-api-manager/internal/temu"
 )
 
+func TestNormalizeParentOrderSNs(t *testing.T) {
+	items, err := normalizeParentOrderSNs([]string{" PO-1 ", "PO-1", "PO-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(items, []string{"PO-1", "PO-2"}) {
+		t.Fatalf("normalized orders = %#v", items)
+	}
+	if _, err := normalizeParentOrderSNs(nil); err == nil {
+		t.Fatal("empty lookup must be rejected")
+	}
+	if _, err := normalizeParentOrderSNs(make([]string, 51)); err == nil {
+		t.Fatal("oversized lookup must be rejected")
+	}
+}
+
 func TestTemporaryFulfillmentError(t *testing.T) {
 	tests := []struct {
 		name string

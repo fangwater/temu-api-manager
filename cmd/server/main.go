@@ -58,10 +58,10 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	handlers := make(map[string]http.Handler, len(shops))
 	shopInfo := make([]httpapi.ShopInfo, 0, len(shops))
 	for _, shop := range shops {
-		shopInfo = append(shopInfo, httpapi.ShopInfo{Code: shop.Code, Name: shop.Name, Default: shop.Code == cfg.StoreCode})
 		if !shop.Enabled {
 			continue
 		}
+		shopInfo = append(shopInfo, httpapi.ShopInfo{Code: shop.Code, Name: shop.Name, Default: shop.Code == cfg.StoreCode})
 		destination, destinationErr := store.NewPostgresForShop(ctx, cfg.DatabaseURL, shop.SchemaName, shop.Code)
 		if destinationErr != nil {
 			return fmt.Errorf("initialize shop %s database: %w", shop.Code, destinationErr)

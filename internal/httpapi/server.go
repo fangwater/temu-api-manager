@@ -52,6 +52,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("GET /api/orders", s.listOrders)
 	mux.HandleFunc("GET /api/orders/history", s.listOrderHistory)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/detail", s.getOrderDetail)
+	mux.HandleFunc("GET /api/orders/{parentOrderSN}/shipment", s.getOrderShipment)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/tracking", s.orderTracking)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}", s.getOrder)
 	mux.HandleFunc("POST /api/orders/sync", s.syncOrders)
@@ -74,6 +75,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("POST /api/auto-fulfillment/batches/restart", s.restartBulkFulfillment)
 	mux.HandleFunc("GET /api/auto-fulfillment/batches/latest", s.latestBulkFulfillment)
 	mux.HandleFunc("GET /api/shipments", s.listShipments)
+	mux.HandleFunc("POST /api/shipments/lookup", s.lookupOrderShipments)
 	mux.HandleFunc("GET /api/shipments/export-po.zip", s.exportShipmentPOZIP)
 	mux.HandleFunc("GET /api/shipments/export-po.csv", s.exportShipmentPOZIP)
 	mux.HandleFunc("GET /api/packages/{packageSn}/tracking", s.packageTracking)
@@ -653,6 +655,34 @@ func (s *Server) getShipment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) getOrderShipment(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.ShipmentForOrder(ctx, r.PathValue("parentOrderSN"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) lookupOrderShipments(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		ParentOrderSNs []string `json:"parent_order_sns"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	items, err := s.service.ShipmentsForOrders(ctx, input.ParentOrderSNs)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: items})
 }
 
 func (s *Server) packageTracking(w http.ResponseWriter, r *http.Request) {
