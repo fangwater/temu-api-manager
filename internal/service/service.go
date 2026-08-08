@@ -2066,7 +2066,7 @@ func temporaryFulfillmentError(err error) bool {
 	}
 	var apiErr *temu.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.Temporary || (apiErr.Code == "7000000" && strings.EqualFold(strings.TrimSpace(apiErr.Message), "BUSINESS_SERVICE_ERROR"))
+		return apiErr.Temporary || temu.IsRateLimitError(apiErr) || (apiErr.Code == "7000000" && strings.EqualFold(strings.TrimSpace(apiErr.Message), "BUSINESS_SERVICE_ERROR"))
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
@@ -2206,7 +2206,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			if confirmErr != nil {
 				status := fulfillmentErrorStatus(confirmErr, "confirming")
 				message := confirmErr.Error()
-				if status == "confirming" && shipment.ConfirmationAttempts >= maxShipmentConfirmationAttempts {
+				if status == "confirming" && shipment.ConfirmationAttempts >= maxShipmentConfirmationAttempts && !temu.IsRateLimitError(confirmErr) {
 					status = "failed"
 					message = fmt.Sprintf("Temu 确认发货连续失败 %d 次: %s", shipment.ConfirmationAttempts, message)
 				}

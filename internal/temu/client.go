@@ -14,10 +14,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type APIError struct {
+	APIType   string
 	Status    int
 	Code      string
 	Message   string
@@ -26,13 +28,27 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	if e.Code == "" {
-		return fmt.Sprintf("Temu HTTP %d: %s", e.Status, e.Message)
+	operation := "Temu API"
+	if e.APIType != "" {
+		operation += " " + e.APIType
 	}
-	return fmt.Sprintf("Temu API error code=%s msg=%s", e.Code, e.Message)
+	if e.Code == "" {
+		return fmt.Sprintf("%s HTTP %d: %s", operation, e.Status, e.Message)
+	}
+	return fmt.Sprintf("%s error code=%s msg=%s", operation, e.Code, e.Message)
 }
 
 func (e *APIError) Unwrap() error { return e.Cause }
+
+func IsRateLimitError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(apiErr.Message))
+	return apiErr.Code == "4000004" || apiErr.Status == http.StatusTooManyRequests ||
+		strings.Contains(message, "too frequent requests") || strings.Contains(message, "rate limit")
+}
 
 type Client struct {
 	baseURL              string
@@ -42,6 +58,9 @@ type Client struct {
 	accessToken          string
 	httpClient           *http.Client
 	clock                func() time.Time
+	requestInterval      time.Duration
+	requestMu            sync.Mutex
+	nextRequestAt        time.Time
 	shipmentCreateSlots  chan struct{}
 }
 
@@ -49,6 +68,45 @@ func NewClient(baseURL, appKey, appSecret, accessToken string, timeout time.Dura
 	return &Client{
 		baseURL: strings.TrimSpace(baseURL), appKey: appKey, appSecret: appSecret, accessToken: accessToken,
 		httpClient: &http.Client{Timeout: timeout}, clock: time.Now, shipmentCreateSlots: make(chan struct{}, 2),
+	}
+}
+
+func (c *Client) SetRequestInterval(interval time.Duration) error {
+	if interval < 0 || interval > 10*time.Second {
+		return errors.New("Temu API request interval must be between 0 and 10 seconds")
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	c.requestInterval = interval
+	c.nextRequestAt = time.Time{}
+	return nil
+}
+
+func (c *Client) waitForRequestSlot(ctx context.Context) error {
+	c.requestMu.Lock()
+	interval := c.requestInterval
+	if interval <= 0 {
+		c.requestMu.Unlock()
+		return nil
+	}
+	now := time.Now()
+	scheduled := now
+	if c.nextRequestAt.After(scheduled) {
+		scheduled = c.nextRequestAt
+	}
+	c.nextRequestAt = scheduled.Add(interval)
+	c.requestMu.Unlock()
+	delay := time.Until(scheduled)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -91,6 +149,9 @@ func (c *Client) Call(ctx context.Context, apiType string, parameters map[string
 	if err != nil {
 		return nil, err
 	}
+	if err := c.waitForRequestSlot(ctx); err != nil {
+		return nil, &APIError{APIType: apiType, Message: err.Error(), Temporary: true, Cause: err}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal Temu request: %w", err)
@@ -103,12 +164,12 @@ func (c *Client) Call(ctx context.Context, apiType string, parameters map[string
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, &APIError{Message: err.Error(), Temporary: true}
+		return nil, &APIError{APIType: apiType, Message: err.Error(), Temporary: true}
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
 	if err != nil {
-		return nil, &APIError{Status: response.StatusCode, Message: err.Error(), Temporary: true}
+		return nil, &APIError{APIType: apiType, Status: response.StatusCode, Message: err.Error(), Temporary: true}
 	}
 	var envelope struct {
 		Success   bool            `json:"success"`
@@ -117,10 +178,12 @@ func (c *Client) Call(ctx context.Context, apiType string, parameters map[string
 		Result    json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return raw, &APIError{Status: response.StatusCode, Message: "invalid JSON response", Temporary: response.StatusCode >= 500}
+		return raw, &APIError{APIType: apiType, Status: response.StatusCode, Message: "invalid JSON response", Temporary: response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !envelope.Success {
-		return raw, &APIError{Status: response.StatusCode, Code: rawScalar(envelope.ErrorCode), Message: envelope.ErrorMsg, Temporary: response.StatusCode >= 500}
+		apiErr := &APIError{APIType: apiType, Status: response.StatusCode, Code: rawScalar(envelope.ErrorCode), Message: envelope.ErrorMsg, Temporary: response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests}
+		apiErr.Temporary = apiErr.Temporary || IsRateLimitError(apiErr)
+		return raw, apiErr
 	}
 	if result != nil && len(envelope.Result) > 0 && string(envelope.Result) != "null" {
 		if err := json.Unmarshal(envelope.Result, result); err != nil {

@@ -1,8 +1,14 @@
 package temu
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildSignatureMatchesOfficialExample(t *testing.T) {
@@ -25,5 +31,47 @@ func TestSerializeSignValueUsesCompactJSON(t *testing.T) {
 	}
 	if got := serializeSignValue(map[string]any{"enabled": false}); got != `{"enabled":false}` {
 		t.Fatalf("unexpected object serialization: %s", got)
+	}
+}
+
+func TestCallClassifiesRateLimitAndIncludesAPIType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"success":false,"errorCode":4000004,"errorMsg":"too frequent requests, exceeding rate limit."}`))
+	}))
+	defer server.Close()
+
+	_, err := NewClient(server.URL, "app", "secret", "token", time.Second).Call(context.Background(), ShipmentResultAPI, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %v", err)
+	}
+	if !apiErr.Temporary || !IsRateLimitError(apiErr) {
+		t.Fatalf("rate limit must be temporary: %#v", apiErr)
+	}
+	if apiErr.APIType != ShipmentResultAPI || !strings.Contains(err.Error(), ShipmentResultAPI) {
+		t.Fatalf("error must identify API type: %v", err)
+	}
+}
+
+func TestCallPacesRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"success":true,"result":{}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "app", "secret", "token", time.Second)
+	if err := client.SetRequestInterval(20 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	for range 3 {
+		if _, err := client.Call(context.Background(), "test.api", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if elapsed := time.Since(started); elapsed < 35*time.Millisecond {
+		t.Fatalf("three calls completed without pacing: %s", elapsed)
 	}
 }

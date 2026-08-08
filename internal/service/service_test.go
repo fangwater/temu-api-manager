@@ -37,6 +37,7 @@ func TestTemporaryFulfillmentError(t *testing.T) {
 	}{
 		{name: "Temu transport timeout", err: &temu.APIError{Temporary: true, Message: "timeout"}, want: true},
 		{name: "Temu generic business service error", err: &temu.APIError{Code: "7000000", Message: "BUSINESS_SERVICE_ERROR"}, want: true},
+		{name: "Temu rate limit", err: &temu.APIError{Code: "4000004", Message: "too frequent requests"}, want: true},
 		{name: "wrapped Temu timeout", err: errors.Join(errors.New("warehouse unavailable"), &temu.APIError{Temporary: true, Message: "timeout"}), want: true},
 		{name: "temporary error after business error", err: errors.Join(&temu.APIError{Code: "40001", Message: "invalid request"}, &temu.APIError{Temporary: true, Message: "timeout"}), want: true},
 		{name: "request deadline", err: context.DeadlineExceeded, want: true},

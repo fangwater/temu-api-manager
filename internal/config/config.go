@@ -14,6 +14,7 @@ import (
 const (
 	DefaultAPIBaseURL                = "http://13.115.227.29:6355/openapi/router"
 	DefaultDocumentProxyBaseURL      = "http://13.115.227.29:6355"
+	DefaultAPIRequestInterval        = 250 * time.Millisecond
 	DefaultListen                    = "127.0.0.1:18082"
 	DefaultWarehouseDecisionURL      = "https://pangutech.online/warehouse-console/api/temu/warehouse-availability/query"
 	DefaultXLWMSOutboundURL          = "https://pangutech.online/warehouse-console/api/outbound"
@@ -33,6 +34,7 @@ type Config struct {
 	DatabaseURL               string
 	APIBaseURL                string
 	DocumentProxyBaseURL      string
+	APIRequestInterval        time.Duration
 	AccessToken               string
 	AppKey                    string
 	AppSecret                 string
@@ -72,6 +74,7 @@ func Load() (Config, error) {
 		DatabaseURL:               strings.TrimSpace(os.Getenv("TEMU_DATABASE_URL")),
 		APIBaseURL:                strings.TrimSpace(envOrDefault("TEMU_API_BASE_URL", DefaultAPIBaseURL)),
 		DocumentProxyBaseURL:      strings.TrimSpace(envOrDefault("TEMU_DOCUMENT_PROXY_BASE_URL", DefaultDocumentProxyBaseURL)),
+		APIRequestInterval:        DefaultAPIRequestInterval,
 		AccessToken:               strings.TrimSpace(os.Getenv("TEMU_ACCESS_TOKEN")),
 		AppKey:                    strings.TrimSpace(os.Getenv("TEMU_APP_KEY")),
 		AppSecret:                 strings.TrimSpace(os.Getenv("TEMU_APP_SECRET")),
@@ -102,6 +105,9 @@ func Load() (Config, error) {
 		if value == "" {
 			return Config{}, errors.New(name + " is required")
 		}
+	}
+	if cfg.APIRequestInterval, err = duration("TEMU_API_REQUEST_INTERVAL", cfg.APIRequestInterval); err != nil {
+		return Config{}, err
 	}
 	if cfg.OrderSyncInterval, err = duration("TEMU_ORDER_SYNC_INTERVAL", cfg.OrderSyncInterval); err != nil {
 		return Config{}, err

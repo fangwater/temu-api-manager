@@ -71,6 +71,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			return fmt.Errorf("migrate shop %s: %w", shop.Code, err)
 		}
 		temuClient := temu.NewClient(cfg.APIBaseURL, shop.AppKey, shop.AppSecret, shop.AccessToken, cfg.RequestTimeout)
+		if err := temuClient.SetRequestInterval(cfg.APIRequestInterval); err != nil {
+			return err
+		}
 		if err := temuClient.SetShipmentCreateConcurrency(cfg.ShipmentCreateConcurrency); err != nil {
 			return err
 		}
@@ -107,7 +110,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			errorsChannel <- serveErr
 		}
 	}()
-	logger.Info("Temu Go service started", "default_shop", cfg.StoreCode, "shop_count", len(handlers), "listen", listener.Addr().String(), "order_sync_interval", cfg.OrderSyncInterval.String(), "oms_query_interval", cfg.OMSQueryInterval.String(), "fulfillment_interval", cfg.FulfillmentInterval.String(), "fulfillment_concurrency", cfg.FulfillmentConcurrency, "shipment_create_concurrency", cfg.ShipmentCreateConcurrency)
+	logger.Info("Temu Go service started", "default_shop", cfg.StoreCode, "shop_count", len(handlers), "listen", listener.Addr().String(), "order_sync_interval", cfg.OrderSyncInterval.String(), "oms_query_interval", cfg.OMSQueryInterval.String(), "fulfillment_interval", cfg.FulfillmentInterval.String(), "fulfillment_concurrency", cfg.FulfillmentConcurrency, "shipment_create_concurrency", cfg.ShipmentCreateConcurrency, "api_request_interval", cfg.APIRequestInterval.String())
 	select {
 	case <-ctx.Done():
 		logger.Info("Temu service shutdown requested")

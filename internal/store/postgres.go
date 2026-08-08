@@ -1206,6 +1206,9 @@ const autoFulfillmentClaimOrder = `CASE j.status
 END,
 CASE WHEN j.status IN ('confirming','waiting_label','running') THEN j.updated_at END ASC NULLS LAST`
 
+const autoFulfillmentRateLimitMarker = "%code=4000004%"
+const autoFulfillmentRateLimitBackoff = time.Minute
+
 func (p *Postgres) ClaimAutoFulfillments(ctx context.Context, retryBefore time.Time, limit int) ([]model.AutoFulfillmentJob, error) {
 	if limit < 1 || limit > 50 {
 		limit = 4
@@ -1215,10 +1218,17 @@ func (p *Postgres) ClaimAutoFulfillments(ctx context.Context, retryBefore time.T
 			SELECT j.parent_order_sn
 			FROM temu_auto_fulfillment_jobs j
 			JOIN temu_orders o ON o.parent_order_sn=j.parent_order_sn
-WHERE j.status='queued'
+WHERE (j.status='queued' AND (j.last_error NOT LIKE $3 OR j.updated_at < $4))
    OR (j.status='waiting_oms' AND j.updated_at < now()-interval '2 minutes')
-   OR (j.status IN ('waiting_label','confirming') AND j.updated_at < $1)
+   OR (j.status IN ('waiting_label','confirming') AND j.updated_at < CASE WHEN j.last_error LIKE $3 THEN $4 ELSE $1 END)
    OR (j.status='running' AND j.updated_at < now()-interval '5 minutes')
+   OR (j.status='failed' AND j.last_error LIKE $3 AND j.updated_at < $4 AND (
+       j.shipment_id IS NULL OR EXISTS (
+SELECT 1 FROM temu_shipments retry_shipment
+WHERE retry_shipment.id=j.shipment_id
+  AND retry_shipment.status IN ('submitting','label_pending','label_ready','confirm_failed','submission_unknown')
+       )
+   ))
    OR (j.status='failed' AND j.updated_at < now()-interval '20 seconds' AND EXISTS (
 SELECT 1 FROM temu_shipments failed_shipment
 WHERE failed_shipment.id=j.shipment_id
@@ -1245,7 +1255,7 @@ WHERE bulk_item.parent_order_sn=j.parent_order_sn
 		FROM picked WHERE j.parent_order_sn=picked.parent_order_sn
 		RETURNING j.parent_order_sn,coalesce(j.shipment_id,''),j.status,j.attempts,j.last_error,
 			j.created_at,j.updated_at,j.started_at,j.completed_at
-	`, retryBefore, limit)
+	`, retryBefore, limit, autoFulfillmentRateLimitMarker, time.Now().Add(-autoFulfillmentRateLimitBackoff))
 	if err != nil {
 		return nil, err
 	}

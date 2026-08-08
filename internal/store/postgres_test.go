@@ -4,9 +4,19 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"temu-api-manager/internal/model"
 )
+
+func TestAutoFulfillmentRateLimitBackoff(t *testing.T) {
+	if autoFulfillmentRateLimitMarker != "%code=4000004%" {
+		t.Fatalf("unexpected rate-limit marker %q", autoFulfillmentRateLimitMarker)
+	}
+	if autoFulfillmentRateLimitBackoff != time.Minute {
+		t.Fatalf("rate-limit backoff = %s", autoFulfillmentRateLimitBackoff)
+	}
+}
 
 func TestLogicalWarehouseKey(t *testing.T) {
 	tests := []struct {
