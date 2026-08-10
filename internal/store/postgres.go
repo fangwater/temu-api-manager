@@ -219,7 +219,7 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
         AND NOT EXISTS (
             SELECT 1 FROM temu_order_manual_reviews manual
             WHERE manual.parent_order_sn=o.parent_order_sn AND manual.active
-              AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
+              AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','shop_sku_warehouse_restriction','delivery_address_unsupported']::text[])
         )`
 	}
 	args := []any{}
@@ -568,6 +568,137 @@ shop_code,oms_warehouse_key,carrier_code,priority,enabled,updated_at
 `, p.shopCode, warehouseKey, policy.CarrierCode, policy.Priority, policy.Enabled); err != nil {
 			return err
 		}
+	}
+	return tx.Commit(ctx)
+}
+
+const skuWarehouseRuleCatalogSQL = `
+WITH order_skus AS (
+    SELECT btrim(ext_code) AS warehouse_sku,
+           max(nullif(btrim(goods_name), '')) AS product_name
+    FROM temu_order_lines
+    WHERE btrim(ext_code) <> ''
+    GROUP BY btrim(ext_code)
+), sku_sources AS (
+    SELECT warehouse_sku, product_name FROM order_skus
+    UNION ALL
+    SELECT warehouse_sku, ''::text
+    FROM public.temu_sku_disabled_warehouses
+    WHERE shop_code=$1
+), sku_catalog AS (
+    SELECT warehouse_sku, coalesce(max(product_name), '') AS product_name
+    FROM sku_sources
+    GROUP BY warehouse_sku
+)`
+
+func (p *Postgres) ListSKUWarehouseRules(ctx context.Context, query string, page, pageSize int) ([]model.SKUWarehouseRule, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 30
+	}
+	query = strings.TrimSpace(query)
+	filter := `
+WHERE ($2='' OR catalog.warehouse_sku ILIKE '%' || $2 || '%'
+              OR catalog.product_name ILIKE '%' || $2 || '%')`
+	var total int
+	if err := p.pool.QueryRow(ctx, skuWarehouseRuleCatalogSQL+`
+SELECT count(*) FROM sku_catalog catalog `+filter, p.shopCode, query).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := p.pool.Query(ctx, skuWarehouseRuleCatalogSQL+`
+SELECT catalog.warehouse_sku,catalog.product_name,
+       coalesce(array_agg(disabled.oms_warehouse_key ORDER BY disabled.oms_warehouse_key)
+           FILTER (WHERE disabled.oms_warehouse_key IS NOT NULL), ARRAY[]::text[]),
+       max(disabled.updated_at)
+FROM sku_catalog catalog
+LEFT JOIN public.temu_sku_disabled_warehouses disabled
+  ON disabled.shop_code=$1 AND disabled.warehouse_sku=catalog.warehouse_sku
+`+filter+`
+GROUP BY catalog.warehouse_sku,catalog.product_name
+ORDER BY (max(disabled.updated_at) IS NOT NULL) DESC,catalog.warehouse_sku
+LIMIT $3 OFFSET $4`, p.shopCode, query, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]model.SKUWarehouseRule, 0)
+	for rows.Next() {
+		var item model.SKUWarehouseRule
+		if err := rows.Scan(&item.WarehouseSKU, &item.ProductName, &item.DisabledWarehouseKeys, &item.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		item.Customized = len(item.DisabledWarehouseKeys) > 0
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (p *Postgres) DisabledWarehouseKeysForSKUs(ctx context.Context, warehouseSKUs []string) (map[string]map[string]bool, error) {
+	seen := make(map[string]bool, len(warehouseSKUs))
+	normalized := make([]string, 0, len(warehouseSKUs))
+	for _, warehouseSKU := range warehouseSKUs {
+		warehouseSKU = strings.TrimSpace(warehouseSKU)
+		if warehouseSKU == "" || seen[warehouseSKU] {
+			continue
+		}
+		seen[warehouseSKU] = true
+		normalized = append(normalized, warehouseSKU)
+	}
+	result := make(map[string]map[string]bool)
+	if len(normalized) == 0 {
+		return result, nil
+	}
+	rows, err := p.pool.Query(ctx, `
+SELECT warehouse_sku,oms_warehouse_key
+FROM public.temu_sku_disabled_warehouses
+WHERE shop_code=$1 AND warehouse_sku=ANY($2::text[])
+ORDER BY warehouse_sku,oms_warehouse_key`, p.shopCode, normalized)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var warehouseSKU, warehouseKey string
+		if err := rows.Scan(&warehouseSKU, &warehouseKey); err != nil {
+			return nil, err
+		}
+		if result[warehouseSKU] == nil {
+			result[warehouseSKU] = make(map[string]bool)
+		}
+		result[warehouseSKU][strings.ToUpper(warehouseKey)] = true
+	}
+	return result, rows.Err()
+}
+
+func (p *Postgres) ReplaceSKUDisabledWarehouses(ctx context.Context, warehouseSKU string, warehouseKeys []string) error {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+DELETE FROM public.temu_sku_disabled_warehouses
+WHERE shop_code=$1 AND warehouse_sku=$2`, p.shopCode, warehouseSKU); err != nil {
+		return err
+	}
+	for _, warehouseKey := range warehouseKeys {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO public.temu_sku_disabled_warehouses(
+    shop_code,warehouse_sku,oms_warehouse_key,updated_at
+) VALUES($1,$2,$3,now())`, p.shopCode, warehouseSKU, warehouseKey); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+DELETE FROM temu_order_warehouse_checks warehouse_check
+WHERE EXISTS (
+    SELECT 1 FROM temu_order_lines line
+    WHERE line.parent_order_sn=warehouse_check.parent_order_sn
+      AND btrim(line.ext_code)=$1
+)`, warehouseSKU); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

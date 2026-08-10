@@ -67,6 +67,8 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("DELETE /api/warehouse-mappings/{omsKey}", s.requireOperationKey(s.deleteWarehouseMapping))
 	mux.HandleFunc("GET /api/carrier-policies", s.listCarrierPolicies)
 	mux.HandleFunc("PUT /api/carrier-policies/{warehouseKey}", s.updateCarrierPolicies)
+	mux.HandleFunc("GET /api/sku-warehouse-rules", s.listSKUWarehouseRules)
+	mux.HandleFunc("PUT /api/sku-warehouse-rules", s.updateSKUWarehouseRule)
 	mux.HandleFunc("POST /api/orders/{parentOrderSN}/warehouse-preview", s.previewWarehouses)
 	mux.HandleFunc("PATCH /api/warehouse-sku-specs/{warehouseSKU}/package", s.updateWarehouseSKUPackageSpec)
 	mux.HandleFunc("POST /api/shipping/quotes", s.createQuote)
@@ -200,7 +202,7 @@ func (s *Server) listManualOrders(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := pagination(r)
 	ctx, cancel := s.context(r)
 	defer cancel()
-	items, total, err := s.service.ListManualReviews(ctx, r.URL.Query().Get("status"), page, pageSize)
+	items, total, err := s.service.ListManualReviews(ctx, r.URL.Query().Get("status"), r.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -212,7 +214,7 @@ func (s *Server) listManualOrders(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exportManualOrdersCSV(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.context(r)
 	defer cancel()
-	items, err := s.service.ListAllManualReviews(ctx, r.URL.Query().Get("status"))
+	items, err := s.service.ListAllManualReviews(ctx, r.URL.Query().Get("status"), r.URL.Query().Get("q"))
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -274,13 +276,14 @@ func writeManualOrdersCSV(destination io.Writer, shopName string, items []model.
 
 func manualReasonExportText(reason string) string {
 	labels := map[string]string{
-		"sku_unbound":                   "SKU 未绑定",
-		"inventory_rule":                "库存安全线不足",
-		"warehouse_sku_spec_incomplete": "仓库 SKU 包裹数据缺失",
-		"delivery_address_unsupported":  "偏远地址物流不支持",
-		"multi_item":                    "一单多件",
-		"merge_candidate":               "合并候选",
-		"platform_consolidated":         "Temu 已合并",
+		"sku_unbound":                    "SKU 未绑定",
+		"inventory_rule":                 "库存安全线不足",
+		"warehouse_sku_spec_incomplete":  "仓库 SKU 包裹数据缺失",
+		"shop_sku_warehouse_restriction": "店铺 SKU 发货仓库受限",
+		"delivery_address_unsupported":   "偏远地址物流不支持",
+		"multi_item":                     "一单多件",
+		"merge_candidate":                "合并候选",
+		"platform_consolidated":          "Temu 已合并",
 	}
 	if label := labels[reason]; label != "" {
 		return label
@@ -397,6 +400,38 @@ func (s *Server) updateCarrierPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
 }
+
+func (s *Server) listSKUWarehouseRules(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := pagination(r)
+	ctx, cancel := s.context(r)
+	defer cancel()
+	items, total, err := s.service.ListSKUWarehouseRules(ctx, r.URL.Query().Get("q"), page, pageSize)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: items,
+		Meta: map[string]any{"page": page, "page_size": pageSize, "total": total}})
+}
+
+func (s *Server) updateSKUWarehouseRule(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		WarehouseSKU          string   `json:"warehouse_sku"`
+		DisabledWarehouseKeys []string `json:"disabled_warehouse_keys"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.UpdateSKUWarehouseRule(ctx, input.WarehouseSKU, input.DisabledWarehouseKeys)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
 func (s *Server) startBulkFulfillment(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Confirm bool `json:"confirm"`

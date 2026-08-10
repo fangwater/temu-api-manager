@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260806-1" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260810-1" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -36,6 +36,7 @@
           <button class="nav-button" data-view="ledger"><svg><use href="#i-truck"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
           <button class="nav-button" data-view="shipments"><svg><use href="#i-truck"/></svg><span>发货记录</span></button>
           <button class="nav-button" data-view="warehouses"><svg><use href="#i-warehouse"/></svg><span>仓库映射</span></button>
+          <button class="nav-button" data-view="sku-warehouses"><svg><use href="#i-warehouse"/></svg><span>SKU 发货仓库</span></button>
           <button class="nav-button" data-view="tracking-statuses"><svg><use href="#i-orders"/></svg><span>物流状态助手</span></button>
         </nav>
         <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-warehouse"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
@@ -102,7 +103,8 @@
 
           <section class="view" id="view-manual">
             <div class="page-head"><div><h1>人工订单</h1><p>库存安全线不足、SKU 未绑定、一单多件与 Temu 合并候选集中在此处理</p></div><div class="page-actions"><button class="secondary-button" id="export-manual"><svg><use href="#i-download"/></svg>批量导出 CSV</button><button class="secondary-button" id="refresh-manual"><svg><use href="#i-refresh"/></svg>刷新</button></div></div>
-            <div class="toolbar">
+            <div class="toolbar manual-toolbar">
+              <label class="search"><svg><use href="#i-search"/></svg><input id="manual-search" type="search" placeholder="搜索订单号、SKU 或商品名称" /></label>
               <label><select id="manual-status"><option value="">全部处理中</option><option value="detected">待转人工</option><option value="manual_pending">人工处理中</option><option value="approved">已批准自动发货</option></select></label>
               <span class="table-note" id="manual-total">共 0 条</span>
             </div>
@@ -145,6 +147,25 @@
             <div class="carrier-policy-grid" id="carrier-policy-grid"></div>
             <div class="section-title"><h2>Temu 仓库</h2><span id="warehouse-total">0 个仓库</span></div>
             <div class="table-shell"><table><thead><tr><th>仓库名称</th><th>Temu Warehouse ID</th><th>区域</th><th>管理类型</th><th>Buy Label</th></tr></thead><tbody id="warehouse-rows"></tbody></table></div>
+          </section>
+
+          <section class="view" id="view-sku-warehouses">
+            <div class="page-head"><div><h1>SKU 发货仓库</h1><p>未单独配置时，SKU 默认允许使用全部已启用仓库</p></div><button class="secondary-button" id="refresh-sku-rules"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="status-band sku-rule-metrics">
+              <div><small>当前店铺</small><strong class="compact" id="metric-sku-shop">-</strong></div>
+              <div><small>SKU 总数</small><strong id="metric-sku-total">0</strong></div>
+              <div><small>本页已限制</small><strong id="metric-sku-customized">0</strong></div>
+              <div><small>可配置仓库</small><strong id="metric-sku-warehouses">3</strong></div>
+            </div>
+            <div class="toolbar">
+              <label class="search"><svg><use href="#i-search"/></svg><input id="sku-rule-search" type="search" placeholder="搜索仓库 SKU 或商品名称" /></label>
+              <span class="table-note" id="sku-rule-total">共 0 个 SKU</span>
+            </div>
+            <div class="table-shell sku-rule-table">
+              <table><thead><tr><th>仓库 SKU / 商品</th><th>DPS002</th><th>ARP 美东</th><th>DPS004</th><th>规则状态</th><th></th></tr></thead><tbody id="sku-rule-rows"></tbody></table>
+              <div class="empty" id="sku-rule-empty" hidden><svg><use href="#i-warehouse"/></svg><strong>没有可配置的 SKU</strong><span>同步订单后，仓库 SKU 会显示在这里</span></div>
+            </div>
+            <div class="pager" id="sku-rule-pager" hidden></div>
           </section>
 
           <section class="view" id="view-tracking-statuses">
@@ -206,6 +227,6 @@
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260806-1" defer></script>
+    <script src="./dashboard.js?v=20260810-2" defer></script>
   </body>
 </html>

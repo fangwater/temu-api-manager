@@ -4,8 +4,11 @@ const apiPath = (path) => `${basePath}/api${path}`;
 const defaultStore = { code: "panda-homes", name: "PANDA HOMES", default: true };
 const requestedShopCode = new URLSearchParams(window.location.search).get("shop");
 const savedShopCode = requestedShopCode || sessionStorage.getItem("temu_selected_shop") || defaultStore.code;
-const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
+const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
 state.carrierPolicies = [];
+state.skuWarehouseRules = [];
+state.skuRuleMeta = {};
+state.manualRequestSequence = 0;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -353,24 +356,40 @@ function manualStatusText(status) {
 }
 
 async function loadManualOrders(focusOrder = "") {
+  const search = $("#manual-search");
+  if (focusOrder) {
+    state.pages.manual = 1;
+    search.value = focusOrder;
+  }
+  const params = new URLSearchParams({ page: state.pages.manual, page_size: state.pageSize });
   const status = $("#manual-status").value;
-  if (focusOrder) state.pages.manual = 1;
+  const query = search.value.trim();
+  if (status) params.set("status", status);
+  if (query) params.set("q", query);
+  const requestSequence = ++state.manualRequestSequence;
   try {
-    const payload = await api(`/manual-orders?page=${state.pages.manual}&page_size=${state.pageSize}${status ? `&status=${encodeURIComponent(status)}` : ""}`);
+    const payload = await api(`/manual-orders?${params}`);
+    if (requestSequence !== state.manualRequestSequence) return;
     if (adjustEmptyPage(payload.meta, "manual", () => loadManualOrders(focusOrder))) return;
     state.manualOrders = payload.data || [];
     state.manualMeta = payload.meta || {};
     renderManualOrders(focusOrder);
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (requestSequence === state.manualRequestSequence) toast(error.message, true);
+  }
 }
 
 async function exportManualOrders() {
   const button = $("#export-manual");
   setLoading(button, true);
   try {
+    const params = new URLSearchParams();
     const status = $("#manual-status").value;
-    const query = status ? `?status=${encodeURIComponent(status)}` : "";
-    const response = await fetch(apiPath(`/manual-orders/export.csv${query}`), {
+    const query = $("#manual-search").value.trim();
+    if (status) params.set("status", status);
+    if (query) params.set("q", query);
+    const queryString = params.toString();
+    const response = await fetch(apiPath(`/manual-orders/export.csv${queryString ? `?${queryString}` : ""}`), {
       cache: "no-store",
       headers: { "X-Temu-Shop": state.store.code },
     });
@@ -428,6 +447,9 @@ function renderManualOrders(focusOrder = "") {
 												        </tr>`;
 													  }).join("");
 													    $("#manual-empty").hidden = items.length > 0;
+    const searching = Boolean($("#manual-search").value.trim());
+    $("#manual-empty strong").textContent = searching ? "没有匹配的人工订单" : "没有待人工订单";
+    $("#manual-empty span").textContent = searching ? "请尝试其他订单号、SKU 或商品名称" : "同步后识别的一单多件与合并候选会显示在这里";
       $("#manual-total").textContent = `共 ${state.manualMeta.total ?? items.length} 条`;
         $("#nav-manual-count").textContent = state.manualMeta.total ?? items.length;
         renderPager("#manual-pager", state.manualMeta, "manual", loadManualOrders);
@@ -570,6 +592,80 @@ async function saveCarrierPolicies(warehouseKey, button) {
   }
 }
 
+async function loadSKUWarehouseRules() {
+  const query = $("#sku-rule-search").value.trim();
+  const params = new URLSearchParams({ page: state.pages.skuRules, page_size: state.pageSize });
+  if (query) params.set("q", query);
+  try {
+    const response = await api(`/sku-warehouse-rules?${params}`);
+    state.skuWarehouseRules = response.data || [];
+    state.skuRuleMeta = response.meta || {};
+    if (adjustEmptyPage(state.skuRuleMeta, "skuRules", loadSKUWarehouseRules)) return;
+    renderSKUWarehouseRules();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderSKUWarehouseRules() {
+  const configurableWarehouses = omsWarehouses.filter((warehouse) => !warehouse.disabled);
+  const rows = $("#sku-rule-rows");
+  rows.innerHTML = state.skuWarehouseRules.map((rule) => {
+    const disabled = new Set(rule.disabled_warehouse_keys || []);
+    const disabledCount = disabled.size;
+    return `<tr class="${rule.dirty ? "dirty" : ""}" data-sku-rule-row="${escapeHtml(rule.warehouse_sku)}">
+      <td><div class="sku-rule-identity"><code>${escapeHtml(rule.warehouse_sku)}</code><span>${escapeHtml(rule.product_name || "未记录商品名称")}</span></div></td>
+      ${configurableWarehouses.map((warehouse) => {
+        const allowed = !disabled.has(warehouse.key);
+        return `<td><label class="warehouse-permission" title="${allowed ? "禁止" : "允许"} ${escapeHtml(rule.warehouse_sku)} 使用 ${escapeHtml(warehouse.name)}"><span>${allowed ? "允许" : "禁用"}</span><span class="policy-switch"><input type="checkbox" data-rule-sku="${escapeHtml(rule.warehouse_sku)}" data-rule-warehouse="${escapeHtml(warehouse.key)}" ${allowed ? "checked" : ""} aria-label="允许 ${escapeHtml(rule.warehouse_sku)} 使用 ${escapeHtml(warehouse.name)}"><span></span></span></label></td>`;
+      }).join("")}
+      <td><span class="status-badge ${disabledCount ? "pending" : "neutral"}" data-rule-status>${disabledCount ? `已禁用 ${disabledCount} 仓` : "默认全仓"}</span></td>
+      <td><button class="secondary-button sku-rule-save" data-save-sku-rule="${escapeHtml(rule.warehouse_sku)}" ${rule.dirty ? "" : "disabled"}><svg><use href="#i-check"/></svg>保存</button></td>
+    </tr>`;
+  }).join("");
+  const total = Number(state.skuRuleMeta.total || 0);
+  const customized = state.skuWarehouseRules.filter((rule) => (rule.disabled_warehouse_keys || []).length > 0).length;
+  $("#metric-sku-shop").textContent = state.store.name || state.store.code;
+  $("#metric-sku-total").textContent = total;
+  $("#metric-sku-customized").textContent = customized;
+  $("#metric-sku-warehouses").textContent = configurableWarehouses.length;
+  $("#sku-rule-total").textContent = `共 ${total} 个 SKU`;
+  $("#sku-rule-empty").hidden = state.skuWarehouseRules.length > 0;
+  renderPager("#sku-rule-pager", state.skuRuleMeta, "skuRules", loadSKUWarehouseRules);
+  $$('[data-rule-sku]').forEach((input) => input.addEventListener("change", () => setSKUWarehouseAllowed(input.dataset.ruleSku, input.dataset.ruleWarehouse, input.checked)));
+  $$('[data-save-sku-rule]').forEach((button) => button.addEventListener("click", () => saveSKUWarehouseRule(button.dataset.saveSkuRule, button)));
+}
+
+function setSKUWarehouseAllowed(warehouseSKU, warehouseKey, allowed) {
+  const rule = state.skuWarehouseRules.find((item) => item.warehouse_sku === warehouseSKU);
+  if (!rule) return;
+  const disabled = new Set(rule.disabled_warehouse_keys || []);
+  if (allowed) disabled.delete(warehouseKey);
+  else disabled.add(warehouseKey);
+  rule.disabled_warehouse_keys = omsWarehouses.map((warehouse) => warehouse.key).filter((key) => disabled.has(key));
+  rule.customized = rule.disabled_warehouse_keys.length > 0;
+  rule.dirty = true;
+  renderSKUWarehouseRules();
+}
+
+async function saveSKUWarehouseRule(warehouseSKU, button) {
+  const rule = state.skuWarehouseRules.find((item) => item.warehouse_sku === warehouseSKU);
+  if (!rule) return;
+  setLoading(button, true);
+  try {
+    const { data } = await api("/sku-warehouse-rules", {
+      method: "PUT",
+      body: JSON.stringify({ warehouse_sku: warehouseSKU, disabled_warehouse_keys: rule.disabled_warehouse_keys || [] }),
+    });
+    Object.assign(rule, data, { product_name: rule.product_name, dirty: false });
+    toast(rule.customized ? `${warehouseSKU} 发货仓库限制已保存` : `${warehouseSKU} 已恢复默认全仓`);
+    renderSKUWarehouseRules();
+  } catch (error) {
+    toast(error.message, true);
+    setLoading(button, false);
+  }
+}
+
 async function saveMapping(key) {
   const select = $(`[data-mapping-select="${key}"]`);
   const omsCode = $(`[data-oms-code="${key}"]`);
@@ -678,7 +774,7 @@ function inventoryWarehouse(record, key) {
 function stockCell(warehouse) {
   if (!warehouse) return '<span class="stock-cell blocked"><strong>-</strong><small>未返回</small></span>';
   const amount = Number(warehouse.available_amount || 0);
-  const stateText = !warehouse.active ? "未启用" : warehouse.query_status !== "succeeded" ? "查询失败" : amount <= 0 ? "无库存" : warehouse.selectable ? "可用" : "不可选";
+  const stateText = warehouse.shop_sku_disabled ? "店铺禁用" : !warehouse.active ? "未启用" : warehouse.query_status !== "succeeded" ? "查询失败" : amount <= 0 ? "无库存" : warehouse.selectable ? "可用" : "不可选";
   const tone = warehouse.selectable && amount > 0 ? "ready" : "blocked";
   return `<span class="stock-cell ${tone}" title="${escapeHtml(warehouse.reason || "")}"><strong>${escapeHtml(Number.isInteger(amount) ? amount : amount.toFixed(2))}</strong><small>${stateText}</small></span>`;
 }
@@ -1160,7 +1256,7 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
   if (view === "labels") loadShipmentQueue("labels");
@@ -1168,6 +1264,7 @@ function switchView(view) {
   if (view === "ledger") loadShipmentQueue("ledger");
   if (view === "shipments") loadHistory();
   if (view === "warehouses") loadWarehouses();
+  if (view === "sku-warehouses") loadSKUWarehouseRules();
   if (view === "tracking-statuses") renderTrackingStatusMappings($("#tracking-status-search").value);
 }
 
@@ -1186,6 +1283,7 @@ $("#open-warehouse-mappings").addEventListener("click", () => { $("#fulfillment-
 $("#quote-form").addEventListener("submit", (event) => { event.preventDefault(); clearTimeout(state.quoteTimer); createQuote().catch(() => {}); });
 $("#purchase-button").addEventListener("click", purchaseLabel);
 $("#manual-status").addEventListener("change", () => { state.pages.manual = 1; loadManualOrders(); });
+$("#manual-search").addEventListener("input", () => { state.pages.manual = 1; clearTimeout(state.manualSearchTimer); state.manualSearchTimer = setTimeout(loadManualOrders, 250); });
 $("#refresh-labels").addEventListener("click", () => loadShipmentQueue("labels"));
 $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exceptions"));
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));
@@ -1193,6 +1291,8 @@ $("#export-ledger-po").addEventListener("click", exportShipmentPO);
 $("#refresh-shipments").addEventListener("click", loadHistory);
 $("#sync-warehouses").addEventListener("click", async () => { const button = $("#sync-warehouses"); setLoading(button, true); await loadWarehouses(true); setLoading(button, false); });
 $("#order-search").addEventListener("input", () => { state.pages.orders = 1; clearTimeout(state.searchTimer); state.searchTimer = setTimeout(loadOrders, 250); });
+$("#refresh-sku-rules").addEventListener("click", loadSKUWarehouseRules);
+$("#sku-rule-search").addEventListener("input", () => { state.pages.skuRules = 1; clearTimeout(state.skuRuleSearchTimer); state.skuRuleSearchTimer = setTimeout(loadSKUWarehouseRules, 250); });
 $("#tracking-status-search").addEventListener("input", (event) => renderTrackingStatusMappings(event.target.value));
 $("#key-form").addEventListener("submit", (event) => { event.preventDefault(); state.operationKey = $("#operation-key").value; sessionStorage.setItem(operationKeyStorage(), state.operationKey); $("#key-dialog").close(); state.keyResolver?.(state.operationKey); state.keyResolver = null; });
 $("#key-cancel").addEventListener("click", () => { $("#key-dialog").close(); state.keyResolver?.(""); state.keyResolver = null; });

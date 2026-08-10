@@ -80,3 +80,27 @@
 .tracking-status-raw{color:#343a3f;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:10px;font-weight:600;line-height:17px;letter-spacing:0;overflow-wrap:anywhere;white-space:normal}
 .tracking-status-zh{color:#2f6654;font-size:11px}
 @media(max-width:680px){.tracking-status-policy{align-items:flex-start}.tracking-status-table table{min-width:560px}.tracking-status-table th:first-child,.tracking-status-table td:first-child{width:64%}}
+
+.sku-rule-table table{min-width:900px}
+.sku-rule-table th:first-child{width:31%}
+.sku-rule-table th:nth-child(2),.sku-rule-table th:nth-child(3),.sku-rule-table th:nth-child(4){width:13%}
+.sku-rule-table th:nth-child(5){width:15%}
+.sku-rule-table th:last-child{width:90px}
+.sku-rule-table td:not(:first-child){text-align:center}
+.sku-rule-identity{min-width:0;display:flex;flex-direction:column;gap:4px}
+.sku-rule-identity code{color:#2f6654;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:10px;font-weight:700;letter-spacing:0;overflow-wrap:anywhere}
+.sku-rule-identity span{color:#858c91;font-size:9px;line-height:14px;overflow-wrap:anywhere}
+.warehouse-permission{display:inline-flex;align-items:center;justify-content:center;gap:8px;color:#697177;font-size:9px}
+.warehouse-permission>.policy-switch{flex:none}
+.sku-rule-save{height:32px;padding:0 10px}
+.sku-rule-save svg{width:14px;height:14px}
+.sku-rule-table tr.dirty{background:#fffaf0}
+.nav{min-height:0;overflow-y:auto}
+.sku-rule-metrics strong.compact{overflow-wrap:anywhere}
+@media(max-width:680px){.sku-rule-metrics strong.compact{font-size:10px;line-height:14px}}
+.empty[hidden]{display:none}
+
+@media(max-width:680px){
+  .manual-toolbar{height:auto;flex-wrap:wrap;padding:10px 14px}
+  .manual-toolbar .search{flex:1 0 100%}
+}

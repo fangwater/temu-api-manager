@@ -24,19 +24,20 @@ func NewClient(url string, timeout time.Duration) *Client {
 }
 
 type Warehouse struct {
-	Key         string  `json:"warehouse_key"`
-	Code        string  `json:"wh_code"`
-	Name        string  `json:"warehouse_name"`
-	Region      string  `json:"region"`
-	Provider    string  `json:"provider"`
-	Active      bool    `json:"active"`
-	QueryStatus string  `json:"query_status"`
-	SKUFound    bool    `json:"sku_found"`
-	Available   float64 `json:"available_amount"`
-	Selectable  bool    `json:"selectable"`
-	Recommended bool    `json:"recommended"`
-	ReasonCode  string  `json:"reason_code"`
-	Reason      string  `json:"reason"`
+	Key             string  `json:"warehouse_key"`
+	Code            string  `json:"wh_code"`
+	Name            string  `json:"warehouse_name"`
+	Region          string  `json:"region"`
+	Provider        string  `json:"provider"`
+	Active          bool    `json:"active"`
+	QueryStatus     string  `json:"query_status"`
+	SKUFound        bool    `json:"sku_found"`
+	Available       float64 `json:"available_amount"`
+	Selectable      bool    `json:"selectable"`
+	Recommended     bool    `json:"recommended"`
+	ReasonCode      string  `json:"reason_code"`
+	Reason          string  `json:"reason"`
+	ShopSKUDisabled bool    `json:"shop_sku_disabled,omitempty"`
 }
 
 type Region struct {

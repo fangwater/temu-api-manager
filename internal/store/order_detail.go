@@ -142,28 +142,50 @@ func scanManualReview(row pgx.Row) (model.ManualReview, error) {
 	return item, err
 }
 
-func (p *Postgres) ListManualReviews(ctx context.Context, status string, page, pageSize int) ([]model.ManualReview, int, error) {
+func manualReviewWhere(status, query string) (string, []any) {
+	where := "WHERE m.active"
+	args := []any{}
+	if status = strings.TrimSpace(status); status != "" {
+		args = append(args, status)
+		where += fmt.Sprintf(" AND m.status=$%d", len(args))
+	}
+	if query = strings.TrimSpace(query); query != "" {
+		args = append(args, "%"+query+"%")
+		position := len(args)
+		where += fmt.Sprintf(` AND (
+			m.parent_order_sn ILIKE $%[1]d
+			OR EXISTS (
+				SELECT 1 FROM temu_order_lines l
+				WHERE l.parent_order_sn=m.parent_order_sn
+				  AND (l.order_sn ILIKE $%[1]d OR l.ext_code ILIKE $%[1]d
+				       OR l.goods_name ILIKE $%[1]d OR l.spec ILIKE $%[1]d)
+			)
+			OR EXISTS (
+				SELECT 1 FROM unnest(m.merge_order_sn_list) AS merged(merge_order_sn)
+				WHERE merged.merge_order_sn ILIKE $%[1]d
+			)
+		)`, position)
+	}
+	return where, args
+}
+
+func (p *Postgres) ListManualReviews(ctx context.Context, status, query string, page, pageSize int) ([]model.ManualReview, int, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 30
 	}
-	where := "WHERE active"
-	args := []any{}
-	if status = strings.TrimSpace(status); status != "" {
-		args = append(args, status)
-		where += " AND status=$1"
-	}
+	where, args := manualReviewWhere(status, query)
 	var total int
-	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM temu_order_manual_reviews `+where, args...).Scan(&total); err != nil {
+	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM temu_order_manual_reviews m `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	limitPosition := len(args) + 1
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := p.pool.Query(ctx, fmt.Sprintf(`
-		SELECT parent_order_sn,reasons,merge_order_sn_list,status,active,detected_at,updated_at,approved_at
-		FROM temu_order_manual_reviews %s ORDER BY updated_at DESC LIMIT $%d OFFSET $%d
+		SELECT m.parent_order_sn,m.reasons,m.merge_order_sn_list,m.status,m.active,m.detected_at,m.updated_at,m.approved_at
+		FROM temu_order_manual_reviews m %s ORDER BY m.updated_at DESC LIMIT $%d OFFSET $%d
 	`, where, limitPosition, limitPosition+1), args...)
 	if err != nil {
 		return nil, 0, err

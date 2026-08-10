@@ -153,6 +153,17 @@ CREATE TABLE IF NOT EXISTS public.temu_carrier_policies (
 CREATE INDEX IF NOT EXISTS temu_carrier_policies_lookup_idx
 ON public.temu_carrier_policies(shop_code, oms_warehouse_key, priority);
 
+CREATE TABLE IF NOT EXISTS public.temu_sku_disabled_warehouses (
+    shop_code text NOT NULL REFERENCES public.temu_shops(code) ON DELETE CASCADE,
+    warehouse_sku text NOT NULL,
+    oms_warehouse_key text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (shop_code, warehouse_sku, oms_warehouse_key)
+);
+
+CREATE INDEX IF NOT EXISTS temu_sku_disabled_warehouses_lookup_idx
+ON public.temu_sku_disabled_warehouses(shop_code, warehouse_sku);
+
 CREATE TABLE IF NOT EXISTS temu_shipping_quotes (
     id text PRIMARY KEY,
     parent_order_sn text NOT NULL REFERENCES temu_orders(parent_order_sn),

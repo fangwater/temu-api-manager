@@ -41,7 +41,7 @@ func TestStaticHandlerRejectsUnknownAPI(t *testing.T) {
 	}
 }
 
-func TestCarrierPolicyUpdateSkipsOperationKeyOnly(t *testing.T) {
+func TestPolicyUpdatesSkipOperationKeyOnly(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := New(nil, "secret", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
 
@@ -52,6 +52,7 @@ func TestCarrierPolicyUpdateSkipsOperationKeyOnly(t *testing.T) {
 		want int
 	}{
 		{name: "carrier policy", path: "/api/carrier-policies/DPS002", body: "{", want: http.StatusBadRequest},
+		{name: "SKU warehouse policy", path: "/api/sku-warehouse-rules", body: "{", want: http.StatusBadRequest},
 		{name: "warehouse mapping", path: "/api/warehouse-mappings/DPS002", body: "{}", want: http.StatusUnauthorized},
 	}
 	for _, test := range tests {

@@ -13,6 +13,99 @@ import (
 	"temu-api-manager/internal/temu"
 )
 
+func TestValidateSKUWarehouseRuleUsesNegativeConfiguration(t *testing.T) {
+	warehouseSKU, disabled, err := validateSKUWarehouseRule(" SKU-1 ", []string{"dps004", "DPS002", "DPS004"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warehouseSKU != "SKU-1" {
+		t.Fatalf("warehouse SKU = %q", warehouseSKU)
+	}
+	if !reflect.DeepEqual(disabled, []string{"DPS002", "DPS004"}) {
+		t.Fatalf("disabled warehouses = %#v", disabled)
+	}
+	if _, disabled, err := validateSKUWarehouseRule("SKU-2", nil); err != nil || len(disabled) != 0 {
+		t.Fatalf("empty configuration must restore the all-warehouse default: disabled=%v err=%v", disabled, err)
+	}
+	if _, _, err := validateSKUWarehouseRule("", nil); err == nil {
+		t.Fatal("empty warehouse SKU must be rejected")
+	}
+	if _, _, err := validateSKUWarehouseRule("SKU-1", []string{"UNKNOWN"}); err == nil {
+		t.Fatal("unknown warehouse must be rejected")
+	}
+}
+
+func TestApplySKUWarehouseRestrictionsFallsBackToAllowedWarehouse(t *testing.T) {
+	decision := skuWarehouseRuleDecision()
+	applySKUWarehouseRestrictions(&decision, map[string]map[string]bool{
+		"SKU-1": {"DPS002": true},
+	})
+	selection, err := inventory.SelectWarehouse(decision, "east", map[string]int{"SKU-1": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.WarehouseKey != "ARP_EAST" {
+		t.Fatalf("selected warehouse = %q, want ARP_EAST", selection.WarehouseKey)
+	}
+	disabled := decision.Records[0].Regions[0].Warehouses[0]
+	if disabled.Selectable || !disabled.ShopSKUDisabled || disabled.ReasonCode != "SHOP_SKU_WAREHOUSE_DISABLED" {
+		t.Fatalf("disabled warehouse was not annotated: %#v", disabled)
+	}
+}
+
+func TestApplySKUWarehouseRestrictionsLeavesDefaultUnchanged(t *testing.T) {
+	decision := skuWarehouseRuleDecision()
+	applySKUWarehouseRestrictions(&decision, nil)
+	selection, err := inventory.SelectWarehouse(decision, "east", map[string]int{"SKU-1": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.WarehouseKey != "DPS002" {
+		t.Fatalf("default warehouse = %q, want DPS002", selection.WarehouseKey)
+	}
+}
+
+func TestSKUWarehouseRestrictionsBlockPurchaseAndManualizeNoCoverage(t *testing.T) {
+	order := model.Order{ParentOrderSN: "PO-1", Lines: []model.OrderLine{{ExtCode: "SKU-1", Quantity: 1}}}
+	if err := validateOrderWarehouseRestrictions(order, "DPS002", nil); err != nil {
+		t.Fatalf("default all-warehouse policy must allow purchase: %v", err)
+	}
+	if err := validateOrderWarehouseRestrictions(order, "dps002", map[string]map[string]bool{
+		"SKU-1": {"DPS002": true},
+	}); err == nil {
+		t.Fatal("disabled warehouse must block the final purchase check")
+	}
+
+	decision := skuWarehouseRuleDecision()
+	applySKUWarehouseRestrictions(&decision, map[string]map[string]bool{
+		"SKU-1": {"DPS002": true, "ARP_EAST": true, "DPS004": true, "ARP_WEST": true},
+	})
+	classification := warehouseClassificationFromDecision(order, decision, nil)
+	if classification.Status != "manual" || !contains(classification.Categories, manualReasonSKUWarehousePolicy) {
+		t.Fatalf("classification = %#v, want shop SKU warehouse manual review", classification)
+	}
+}
+
+func skuWarehouseRuleDecision() inventory.DecisionResponse {
+	return inventory.DecisionResponse{
+		Complete:          true,
+		PackageResolution: inventory.PackageResolution{Complete: true},
+		Records: []inventory.SKUDecision{{
+			SKU: "SKU-1",
+			Regions: []inventory.Region{
+				{Region: "east", RecommendedWarehouseKey: "DPS002", Warehouses: []inventory.Warehouse{
+					{Key: "DPS002", Name: "DPS002", Region: "east", Available: 10, Selectable: true, Recommended: true},
+					{Key: "ARP_EAST", Name: "ARP East", Region: "east", Available: 10, Selectable: true},
+				}},
+				{Region: "west", RecommendedWarehouseKey: "DPS004", Warehouses: []inventory.Warehouse{
+					{Key: "DPS004", Name: "DPS004", Region: "west", Available: 10, Selectable: true, Recommended: true},
+					{Key: "ARP_WEST", Name: "ARP West", Region: "west", Available: 10, Selectable: true},
+				}},
+			},
+		}},
+	}
+}
+
 func TestNormalizeParentOrderSNs(t *testing.T) {
 	items, err := normalizeParentOrderSNs([]string{" PO-1 ", "PO-1", "PO-2"})
 	if err != nil {

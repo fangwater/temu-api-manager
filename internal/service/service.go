@@ -310,6 +310,9 @@ func (s *Service) ClassifyWarehouseQueue(ctx context.Context, limit int) (Wareho
 	}
 	for _, group := range groups {
 		decision, queryErr := s.inventory.Query(ctx, group.quantities)
+		if queryErr == nil {
+			queryErr = s.applyShopSKUWarehouseRules(ctx, &decision)
+		}
 		for _, order := range group.orders {
 			classification := warehouseClassificationFromDecision(order, decision, queryErr)
 			if err := s.persistWarehouseClassification(ctx, order, classification); err != nil {
@@ -369,6 +372,16 @@ func warehouseClassificationFromDecision(order model.Order, decision inventory.D
 	if inventoryManual {
 		item.Categories = append(item.Categories, manualReasonInventoryRule)
 	}
+	if !inventoryManual && len(unboundSKUs) == 0 && decisionHasShopSKUWarehouseRestrictions(decision) {
+		quantities, _ := warehouseQuantities(order)
+		_, eastErr := inventory.SelectWarehouse(decision, "east", quantities)
+		_, westErr := inventory.SelectWarehouse(decision, "west", quantities)
+		if eastErr != nil && westErr != nil {
+			item.Categories = append(item.Categories, manualReasonSKUWarehousePolicy)
+			item.ReasonDetails = append(item.ReasonDetails,
+				"当前店铺的 SKU 发货仓库规则未保留可覆盖订单全部商品的仓库")
+		}
+	}
 	if !decision.PackageResolution.Complete {
 		item.Categories = append(item.Categories, manualReasonWarehouseSKUSpec)
 		reason := strings.TrimSpace(decision.PackageResolution.Error)
@@ -392,7 +405,7 @@ func (s *Service) persistWarehouseClassification(ctx context.Context, order mode
 		return nil
 	}
 	if item.Status == "eligible" {
-		for _, reason := range []string{"sku_unbound", manualReasonInventoryRule, manualReasonWarehouseSKUSpec} {
+		for _, reason := range []string{"sku_unbound", manualReasonInventoryRule, manualReasonWarehouseSKUSpec, manualReasonSKUWarehousePolicy} {
 			if err := s.store.ClearManualReviewReason(ctx, order.ParentOrderSN, reason); err != nil {
 				return fmt.Errorf("clear recovered warehouse classification %s for %s: %w", reason, order.ParentOrderSN, err)
 			}
@@ -448,15 +461,15 @@ func (s *Service) ListOrderHistory(ctx context.Context, page, pageSize int) ([]m
 	return s.store.ListOrderHistory(ctx, page, pageSize)
 }
 
-func (s *Service) ListManualReviews(ctx context.Context, status string, page, pageSize int) ([]model.ManualReview, int, error) {
-	return s.store.ListManualReviews(ctx, status, page, pageSize)
+func (s *Service) ListManualReviews(ctx context.Context, status, query string, page, pageSize int) ([]model.ManualReview, int, error) {
+	return s.store.ListManualReviews(ctx, status, query, page, pageSize)
 }
 
-func (s *Service) ListAllManualReviews(ctx context.Context, status string) ([]model.ManualReview, error) {
+func (s *Service) ListAllManualReviews(ctx context.Context, status, query string) ([]model.ManualReview, error) {
 	const pageSize = 100
 	items := make([]model.ManualReview, 0, pageSize)
 	for page := 1; ; page++ {
-		batch, total, err := s.store.ListManualReviews(ctx, status, page, pageSize)
+		batch, total, err := s.store.ListManualReviews(ctx, status, query, page, pageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -541,6 +554,8 @@ func disabledOMSWarehouseReason(omsKey string) string {
 	}
 	return ""
 }
+
+var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
 
 func (s *Service) ListCarrierPolicies(ctx context.Context) ([]model.WarehouseCarrierPolicies, error) {
 	stored, err := s.store.ListCarrierPolicies(ctx)
@@ -638,6 +653,150 @@ func (s *Service) carrierPoliciesByWarehouse(ctx context.Context) (map[string][]
 	}
 	return result, nil
 }
+
+func (s *Service) ListSKUWarehouseRules(ctx context.Context, query string, page, pageSize int) ([]model.SKUWarehouseRule, int, error) {
+	return s.store.ListSKUWarehouseRules(ctx, query, page, pageSize)
+}
+
+func (s *Service) UpdateSKUWarehouseRule(ctx context.Context, warehouseSKU string, disabledWarehouseKeys []string) (model.SKUWarehouseRule, error) {
+	warehouseSKU, disabledWarehouseKeys, err := validateSKUWarehouseRule(warehouseSKU, disabledWarehouseKeys)
+	if err != nil {
+		return model.SKUWarehouseRule{}, err
+	}
+	if err := s.store.ReplaceSKUDisabledWarehouses(ctx, warehouseSKU, disabledWarehouseKeys); err != nil {
+		return model.SKUWarehouseRule{}, err
+	}
+	item := model.SKUWarehouseRule{
+		WarehouseSKU: warehouseSKU, DisabledWarehouseKeys: disabledWarehouseKeys,
+		Customized: len(disabledWarehouseKeys) > 0,
+	}
+	if item.Customized {
+		now := time.Now()
+		item.UpdatedAt = &now
+	}
+	return item, nil
+}
+
+func validateSKUWarehouseRule(warehouseSKU string, disabledWarehouseKeys []string) (string, []string, error) {
+	warehouseSKU = strings.TrimSpace(warehouseSKU)
+	if warehouseSKU == "" {
+		return "", nil, errors.New("warehouse_sku is required")
+	}
+	if len(warehouseSKU) > 255 {
+		return "", nil, errors.New("warehouse_sku is too long")
+	}
+	seen := make(map[string]bool, len(disabledWarehouseKeys))
+	for _, warehouseKey := range disabledWarehouseKeys {
+		warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
+		if !contains(supportedOMSWarehouseKeys, warehouseKey) {
+			return "", nil, fmt.Errorf("unknown OMS warehouse %q", warehouseKey)
+		}
+		seen[warehouseKey] = true
+	}
+	normalized := make([]string, 0, len(seen))
+	for _, warehouseKey := range supportedOMSWarehouseKeys {
+		if seen[warehouseKey] {
+			normalized = append(normalized, warehouseKey)
+		}
+	}
+	return warehouseSKU, normalized, nil
+}
+
+func (s *Service) applyShopSKUWarehouseRules(ctx context.Context, decision *inventory.DecisionResponse) error {
+	warehouseSKUs := make([]string, 0, len(decision.Records))
+	for _, record := range decision.Records {
+		warehouseSKUs = append(warehouseSKUs, record.SKU)
+	}
+	disabled, err := s.store.DisabledWarehouseKeysForSKUs(ctx, warehouseSKUs)
+	if err != nil {
+		return err
+	}
+	applySKUWarehouseRestrictions(decision, disabled)
+	return nil
+}
+
+func applySKUWarehouseRestrictions(decision *inventory.DecisionResponse, disabled map[string]map[string]bool) {
+	for recordIndex := range decision.Records {
+		record := &decision.Records[recordIndex]
+		restrictions := disabled[strings.TrimSpace(record.SKU)]
+		if len(restrictions) == 0 {
+			continue
+		}
+		for regionIndex := range record.Regions {
+			region := &record.Regions[regionIndex]
+			recommendedSelectable := false
+			for warehouseIndex := range region.Warehouses {
+				warehouse := &region.Warehouses[warehouseIndex]
+				warehouseKey := strings.ToUpper(strings.TrimSpace(warehouse.Key))
+				if restrictions[warehouseKey] {
+					warehouse.Selectable = false
+					warehouse.Recommended = false
+					warehouse.ShopSKUDisabled = true
+					warehouse.ReasonCode = "SHOP_SKU_WAREHOUSE_DISABLED"
+					warehouse.Reason = fmt.Sprintf("当前店铺已禁止 SKU %s 使用此仓库", record.SKU)
+				}
+				if warehouseKey == strings.ToUpper(region.RecommendedWarehouseKey) && warehouse.Selectable {
+					recommendedSelectable = true
+				}
+			}
+			if recommendedSelectable {
+				continue
+			}
+			region.RecommendedWarehouseKey = ""
+			for warehouseIndex := range region.Warehouses {
+				region.Warehouses[warehouseIndex].Recommended = false
+			}
+			for warehouseIndex := range region.Warehouses {
+				if region.Warehouses[warehouseIndex].Selectable {
+					region.Warehouses[warehouseIndex].Recommended = true
+					region.RecommendedWarehouseKey = region.Warehouses[warehouseIndex].Key
+					break
+				}
+			}
+			if region.RecommendedWarehouseKey == "" {
+				region.DecisionCode = "SHOP_SKU_WAREHOUSE_DISABLED"
+				region.Reason = "当前店铺的 SKU 发货仓库规则未保留可选仓库"
+			}
+		}
+	}
+}
+
+func decisionHasShopSKUWarehouseRestrictions(decision inventory.DecisionResponse) bool {
+	for _, record := range decision.Records {
+		for _, region := range record.Regions {
+			for _, warehouse := range region.Warehouses {
+				if warehouse.ShopSKUDisabled {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) validateOrderWarehouseAllowed(ctx context.Context, order model.Order, warehouseKey string) error {
+	warehouseSKUs := make([]string, 0, len(order.Lines))
+	for _, line := range order.Lines {
+		warehouseSKUs = append(warehouseSKUs, line.ExtCode)
+	}
+	disabled, err := s.store.DisabledWarehouseKeysForSKUs(ctx, warehouseSKUs)
+	if err != nil {
+		return err
+	}
+	return validateOrderWarehouseRestrictions(order, warehouseKey, disabled)
+}
+
+func validateOrderWarehouseRestrictions(order model.Order, warehouseKey string, disabled map[string]map[string]bool) error {
+	warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
+	for _, line := range order.Lines {
+		warehouseSKU := strings.TrimSpace(line.ExtCode)
+		if disabled[warehouseSKU][warehouseKey] {
+			return fmt.Errorf("当前店铺已禁止 SKU %s 从仓库 %s 购买面单，请重新选择仓库", warehouseSKU, warehouseKey)
+		}
+	}
+	return nil
+}
+
 func (s *Service) UpdateWarehouseSKUPackageSpec(ctx context.Context, warehouseSKU string, update inventory.PackageSpecUpdate) (inventory.WarehouseSKUSpec, error) {
 	return s.inventory.UpdatePackageSpec(ctx, warehouseSKU, update)
 }
@@ -674,9 +833,10 @@ type WarehousePreview struct {
 }
 
 const (
-	manualReasonInventoryRule    = "inventory_rule"
-	manualReasonWarehouseSKUSpec = "warehouse_sku_spec_incomplete"
-	manualReasonDeliveryAddress  = "delivery_address_unsupported"
+	manualReasonInventoryRule      = "inventory_rule"
+	manualReasonWarehouseSKUSpec   = "warehouse_sku_spec_incomplete"
+	manualReasonDeliveryAddress    = "delivery_address_unsupported"
+	manualReasonSKUWarehousePolicy = "shop_sku_warehouse_restriction"
 )
 
 func (s *Service) PreviewWarehouses(ctx context.Context, parent string) (WarehousePreview, error) {
@@ -728,6 +888,11 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 		quantities[line.ExtCode] += line.Quantity
 	}
 	decision, queryErr := s.inventory.Query(ctx, quantities)
+	if queryErr == nil {
+		if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
+			return WarehousePreview{}, err
+		}
+	}
 	preview := WarehousePreview{
 		ParentOrderSN: order.ParentOrderSN, Quantities: quantities, Decision: decision,
 		ManualReasons: make([]string, 0), ManualCategories: make([]string, 0), Regions: make([]WarehouseRegionPreview, 0, 4),
@@ -867,6 +1032,9 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	inventoryStarted := time.Now()
 	decision, err := s.inventory.Query(ctx, quantities)
 	if err != nil {
+		return QuoteResult{}, err
+	}
+	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
 		return QuoteResult{}, err
 	}
 	s.logger.Info("Shipping quote inventory query completed", "parent_order_sn", order.ParentOrderSN, "duration", time.Since(inventoryStarted).String())
@@ -1319,6 +1487,9 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	if !order.Open || order.Status != 2 {
 		return PurchaseResult{}, errOrderNoLongerAwaitingShipment
 	}
+	if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
+		return PurchaseResult{}, err
+	}
 	var saved storedQuoteRequest
 	if err := json.Unmarshal(quote.RequestPayload, &saved); err != nil {
 		return PurchaseResult{}, errors.New("stored quote request is invalid")
@@ -1491,6 +1662,9 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 	}
 	if !order.Open || order.Status != 2 {
 		return PurchaseResult{}, errOrderNoLongerAwaitingShipment
+	}
+	if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
+		return PurchaseResult{}, err
 	}
 	var saved storedQuoteRequest
 	if err := json.Unmarshal(quote.RequestPayload, &saved); err != nil {
@@ -2655,7 +2829,7 @@ func warehouseManualReviewCanBeRechecked(order model.Order) bool {
 		return false
 	}
 	for _, reason := range review.Reasons {
-		if reason != "sku_unbound" && reason != manualReasonInventoryRule && reason != manualReasonWarehouseSKUSpec {
+		if reason != "sku_unbound" && reason != manualReasonInventoryRule && reason != manualReasonWarehouseSKUSpec && reason != manualReasonSKUWarehousePolicy {
 			return false
 		}
 	}
@@ -2666,6 +2840,7 @@ func hasBlockingWarehouseReason(review *model.ManualReview) bool {
 	return review != nil && (contains(review.Reasons, "sku_unbound") ||
 		contains(review.Reasons, manualReasonInventoryRule) ||
 		contains(review.Reasons, manualReasonWarehouseSKUSpec) ||
+		contains(review.Reasons, manualReasonSKUWarehousePolicy) ||
 		contains(review.Reasons, manualReasonDeliveryAddress))
 }
 

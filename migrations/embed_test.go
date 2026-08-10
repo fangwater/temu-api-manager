@@ -70,6 +70,14 @@ func TestInitSQLIncludesShopWarehouseCarrierPolicies(t *testing.T) {
 	}
 }
 
+func TestInitSQLIncludesShopSKUDisabledWarehouses(t *testing.T) {
+	for _, fragment := range []string{"public.temu_sku_disabled_warehouses", "warehouse_sku text NOT NULL", "PRIMARY KEY (shop_code, warehouse_sku, oms_warehouse_key)"} {
+		if !strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL is missing %q", fragment)
+		}
+	}
+}
+
 func TestInitSQLIncludesLabelPurchaseChoiceAnalysis(t *testing.T) {
 	for _, fragment := range []string{
 		"temu_label_purchase_choices",

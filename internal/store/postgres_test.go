@@ -86,3 +86,33 @@ func TestValidateLabelPurchaseAmountRejectsInvalidValues(t *testing.T) {
 		t.Fatalf("valid amount rejected: %v", err)
 	}
 }
+
+func TestManualReviewWhereSupportsStatusAndSearch(t *testing.T) {
+	where, args := manualReviewWhere(" manual_pending ", " PO-123 ")
+	if len(args) != 2 || args[0] != "manual_pending" || args[1] != "%PO-123%" {
+		t.Fatalf("unexpected filter args: %#v", args)
+	}
+	for _, fragment := range []string{
+		"m.status=$1",
+		"m.parent_order_sn ILIKE $2",
+		"l.order_sn ILIKE $2",
+		"l.ext_code ILIKE $2",
+		"l.goods_name ILIKE $2",
+		"l.spec ILIKE $2",
+		"merged.merge_order_sn ILIKE $2",
+	} {
+		if !strings.Contains(where, fragment) {
+			t.Errorf("manual review filter is missing %q: %s", fragment, where)
+		}
+	}
+
+	where, args = manualReviewWhere("", " SKU-A ")
+	if len(args) != 1 || args[0] != "%SKU-A%" || !strings.Contains(where, "m.parent_order_sn ILIKE $1") {
+		t.Fatalf("unexpected query-only filter: where=%q args=%#v", where, args)
+	}
+
+	where, args = manualReviewWhere("", "  ")
+	if where != "WHERE m.active" || len(args) != 0 {
+		t.Fatalf("unexpected empty filter: where=%q args=%#v", where, args)
+	}
+}

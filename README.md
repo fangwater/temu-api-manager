@@ -11,6 +11,28 @@ confirms the Temu shipment, and then waits for read-only XLWMS verification.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
+## Shop SKU Warehouse Rules
+
+SKU warehouse restrictions belong to a Temu shop, not to a warehouse. The
+shared `public.temu_sku_disabled_warehouses` table uses
+`(shop_code, warehouse_sku, oms_warehouse_key)` as its primary key. It stores
+only disabled combinations:
+
+- No rows for a shop and SKU means every globally enabled OMS warehouse is
+  allowed.
+- One or more rows disable only those warehouses for that SKU in that shop.
+- Saving an empty disabled list deletes the rows and restores the default.
+
+The dashboard exposes the rules under **SKU 发货仓库**. The HTTP endpoints are
+`GET /api/sku-warehouse-rules` and `PUT /api/sku-warehouse-rules`; normal
+multi-shop routing selects the shop through `X-Temu-Shop`.
+
+The service applies the restrictions after each live XLWMS inventory decision,
+so warehouse preview, manual quotes, and automatic fulfillment share the same
+selection behavior. It also checks the current rule again immediately before a
+new Buy Label or failed-shipment recovery submission. Updating a rule
+invalidates cached warehouse classifications for orders containing that SKU.
+
 ## Label Purchase Price Analysis
 
 The Go fulfillment service stores a new, immutable price snapshot when a quote
