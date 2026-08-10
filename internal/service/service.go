@@ -86,12 +86,62 @@ func (s *Service) TokenStatus(ctx context.Context) (TokenStatus, error) {
 		state = "warning"
 	}
 	scopes := make(map[string]bool)
-	for _, required := range []string{temu.OrderListAPI, temu.OrderDetailAPI, temu.WarehouseListAPI, temu.ShippingServicesAPI, temu.ShipmentCreateAPI, temu.ShipmentResultAPI, temu.ShipmentDocumentAPI, temu.ShipmentConfirmAPI, temu.TrackingInfoAPI} {
+	for _, required := range []string{temu.OrderListAPI, temu.OrderDetailAPI, temu.CombinedShipmentAPI, temu.WarehouseListAPI, temu.ShippingServicesAPI, temu.ShipmentCreateAPI, temu.ShipmentResultAPI, temu.ShipmentDocumentAPI, temu.ShipmentConfirmAPI, temu.TrackingInfoAPI} {
 		scopes[required] = contains(info.APIScopes, required)
 	}
 	return TokenStatus{Valid: remaining > 0, State: state, ExpiresAt: expires, RemainingSeconds: remaining,
 		RemainingText: humanDuration(remaining), MallID: info.MallID, MallType: info.MallType,
 		RegionID: info.RegionID, ScopeCount: len(info.APIScopes), RequiredScopes: scopes}, nil
+}
+
+type CombinedShipmentCandidate struct {
+	ParentOrderSN     string `json:"parent_order_sn"`
+	ParentOrderStatus int    `json:"parent_order_status"`
+	ParentOrderTime   int64  `json:"parent_order_time"`
+	MallID            int64  `json:"mall_id"`
+	SemiUniqueID      string `json:"semi_unique_id,omitempty"`
+}
+
+type CombinedShipmentCandidateGroup struct {
+	Orders []CombinedShipmentCandidate `json:"orders"`
+}
+
+type CombinedShipmentCandidates struct {
+	Groups      []CombinedShipmentCandidateGroup `json:"groups"`
+	TotalGroups int                              `json:"total_groups"`
+	TotalOrders int                              `json:"total_orders"`
+	QueriedAt   time.Time                        `json:"queried_at"`
+}
+
+func (s *Service) CombinedShipmentCandidates(ctx context.Context) (CombinedShipmentCandidates, error) {
+	result, _, err := s.temu.CombinedShipments(ctx)
+	if err != nil {
+		return CombinedShipmentCandidates{}, err
+	}
+	groups := make([]CombinedShipmentCandidateGroup, 0, len(result.Groups))
+	totalOrders := 0
+	for _, sourceGroup := range result.Groups {
+		orders := make([]CombinedShipmentCandidate, 0, len(sourceGroup.Orders))
+		for _, sourceOrder := range sourceGroup.Orders {
+			parentOrderSN := strings.TrimSpace(sourceOrder.ParentOrderSN)
+			if parentOrderSN == "" {
+				continue
+			}
+			orders = append(orders, CombinedShipmentCandidate{
+				ParentOrderSN: parentOrderSN, ParentOrderStatus: sourceOrder.ParentOrderStatus,
+				ParentOrderTime: sourceOrder.ParentOrderTime, MallID: sourceOrder.MallID,
+				SemiUniqueID: strings.TrimSpace(sourceOrder.SemiUniqueID),
+			})
+		}
+		if len(orders) == 0 {
+			continue
+		}
+		groups = append(groups, CombinedShipmentCandidateGroup{Orders: orders})
+		totalOrders += len(orders)
+	}
+	return CombinedShipmentCandidates{
+		Groups: groups, TotalGroups: len(groups), TotalOrders: totalOrders, QueriedAt: time.Now(),
+	}, nil
 }
 
 func (s *Service) SyncOrders(ctx context.Context) (model.SyncStatus, error) {

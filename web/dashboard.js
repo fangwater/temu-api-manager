@@ -9,6 +9,10 @@ state.carrierPolicies = [];
 state.skuWarehouseRules = [];
 state.skuRuleMeta = {};
 state.manualRequestSequence = 0;
+state.combinedShipmentGroups = [];
+state.combinedShipmentMeta = { total_groups: 0, total_orders: 0, queried_at: null, error: "" };
+state.combinedShipmentRequestSequence = 0;
+state.combinedShipmentLoading = false;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -257,6 +261,80 @@ function renderOrders() {
   renderPager("#orders-pager", state.orderMeta, "orders", loadOrders);
   $$('[data-fulfill]').forEach((button) => button.addEventListener("click", () => openFulfillment(button.dataset.fulfill)));
   $$('[data-open-manual]').forEach((button) => button.addEventListener("click", () => { switchView("manual"); loadManualOrders(button.dataset.openManual); }));
+}
+
+function combinedOrderStatusText(status) {
+  const normalized = Number(status);
+  return normalized === 2 ? "待发货" : normalized ? `状态 ${normalized}` : "未知状态";
+}
+
+function combinedOrderStatusClass(status) {
+  return Number(status) === 2 ? "pending" : "neutral";
+}
+
+function renderCombinedShipmentCandidates() {
+  const groups = (state.combinedShipmentGroups || []).filter((group) => (group.orders || []).length);
+  const meta = state.combinedShipmentMeta || {};
+  const totalGroups = Number(meta.total_groups ?? groups.length);
+  const totalOrders = Number(meta.total_orders ?? groups.reduce((sum, group) => sum + (group.orders || []).length, 0));
+  $("#combined-rows").innerHTML = groups.map((group, groupIndex) => {
+    const orders = group.orders || [];
+    return orders.map((order, orderIndex) => `<tr class="${orderIndex === 0 ? "combined-group-start" : ""}">
+      ${orderIndex === 0 ? `<td rowspan="${orders.length}" class="combined-group-cell"><div class="combined-group-label"><strong>候选组 ${groupIndex + 1}</strong><small>${orders.length} 个母订单</small></div></td>` : ""}
+      <td><div class="order-id"><strong>${escapeHtml(order.parent_order_sn)}</strong><small>Temu 母订单</small></div></td>
+      <td><span class="status-badge ${combinedOrderStatusClass(order.parent_order_status)}">${escapeHtml(combinedOrderStatusText(order.parent_order_status))}</span></td>
+      <td>${formatTime(order.parent_order_time)}</td>
+      <td><code class="combined-identifier">${escapeHtml(order.mall_id || "-")}</code></td>
+      <td><code class="combined-identifier">${escapeHtml(order.semi_unique_id || "-")}</code></td>
+    </tr>`).join("");
+  }).join("");
+  $("#metric-combined-groups").textContent = totalGroups;
+  $("#metric-combined-orders").textContent = totalOrders;
+  $("#metric-combined-shop").textContent = state.store.name || state.store.code;
+  $("#metric-combined-query").textContent = meta.queried_at ? formatTime(meta.queried_at) : state.combinedShipmentLoading ? "查询中" : "尚未查询";
+  $("#nav-combined-count").textContent = totalOrders;
+  $("#combined-total").textContent = `共 ${totalGroups} 组 · ${totalOrders} 个母订单`;
+
+  const empty = $("#combined-empty");
+  empty.hidden = groups.length > 0;
+  if (groups.length > 0) return;
+  if (state.combinedShipmentLoading) {
+    empty.querySelector("strong").textContent = "正在查询 Temu";
+    empty.querySelector("span").textContent = "正在读取当前店铺的可合并发货候选组";
+  } else if (meta.error) {
+    empty.querySelector("strong").textContent = "查询失败";
+    empty.querySelector("span").textContent = meta.error;
+  } else {
+    empty.querySelector("strong").textContent = "当前无可用的合并订单";
+    empty.querySelector("span").textContent = "Temu 当前店铺未返回可合并发货候选组";
+  }
+}
+
+async function loadCombinedShipmentCandidates() {
+  const button = $("#refresh-combined");
+  const requestSequence = ++state.combinedShipmentRequestSequence;
+  state.combinedShipmentLoading = true;
+  state.combinedShipmentGroups = [];
+  state.combinedShipmentMeta = { total_groups: 0, total_orders: 0, queried_at: null, error: "" };
+  setLoading(button, true);
+  renderCombinedShipmentCandidates();
+  try {
+    const { data } = await api("/combined-shipment-candidates");
+    if (requestSequence !== state.combinedShipmentRequestSequence) return;
+    state.combinedShipmentGroups = data?.groups || [];
+    state.combinedShipmentMeta = { ...(data || {}), error: "" };
+  } catch (error) {
+    if (requestSequence !== state.combinedShipmentRequestSequence) return;
+    state.combinedShipmentGroups = [];
+    state.combinedShipmentMeta = { total_groups: 0, total_orders: 0, queried_at: null, error: error.message };
+    toast(error.message, true);
+  } finally {
+    if (requestSequence === state.combinedShipmentRequestSequence) {
+      state.combinedShipmentLoading = false;
+      setLoading(button, false);
+      renderCombinedShipmentCandidates();
+    }
+  }
 }
 
 async function loadBulkFulfillment() {
@@ -1256,9 +1334,10 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
+  if (view === "combined") loadCombinedShipmentCandidates();
   if (view === "labels") loadShipmentQueue("labels");
   if (view === "exceptions") loadShipmentQueue("exceptions");
   if (view === "ledger") loadShipmentQueue("ledger");
@@ -1273,6 +1352,7 @@ $("#menu-button").addEventListener("click", () => { $("#sidebar").classList.add(
 $("#backdrop").addEventListener("click", () => { $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible"); });
 $("#sync-orders").addEventListener("click", syncOrders);
 $("#bulk-fulfill").addEventListener("click", startBulkFulfillment);
+$("#refresh-combined").addEventListener("click", loadCombinedShipmentCandidates);
 $("#restart-bulk").addEventListener("click", restartBulkFulfillment);
 $("#refresh-manual").addEventListener("click", () => loadManualOrders());
 $("#export-manual").addEventListener("click", exportManualOrders);

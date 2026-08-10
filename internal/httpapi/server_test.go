@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"temu-api-manager/internal/model"
+	"temu-api-manager/internal/service"
 	"temu-api-manager/internal/temu"
 )
 
@@ -38,6 +40,51 @@ func TestStaticHandlerRejectsUnknownAPI(t *testing.T) {
 	}
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 		t.Fatalf("unexpected content type %q", contentType)
+	}
+}
+
+func TestCombinedShipmentCandidatesEndpointReturnsNormalizedGroups(t *testing.T) {
+	var upstreamRequest map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"result":{"combinedShippingGroups":[{"combinedShippingGroup":[{"parentOrderSn":" PO-1 ","parentOrderStatus":2,"parentOrderTime":1760000000,"mallId":42,"semiUniqueId":" semi-1 "},{"parentOrderSn":"","parentOrderStatus":2},{"parentOrderSn":"PO-2","parentOrderStatus":4,"parentOrderTime":1760000010,"mallId":42}]},{"combinedShippingGroup":[]}]}}`))
+	}))
+	defer upstream.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager := service.New(nil, temu.NewClient(upstream.URL, "app", "secret", "token", time.Second), nil, nil, time.Minute, logger)
+	handler := New(manager, "", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/combined-shipment-candidates", nil)
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("got status %d: %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Success bool                               `json:"success"`
+		Data    service.CombinedShipmentCandidates `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Success || payload.Data.TotalGroups != 1 || payload.Data.TotalOrders != 2 {
+		t.Fatalf("unexpected response: %#v", payload)
+	}
+	if len(payload.Data.Groups) != 1 || len(payload.Data.Groups[0].Orders) != 2 {
+		t.Fatalf("unexpected normalized groups: %#v", payload.Data.Groups)
+	}
+	first := payload.Data.Groups[0].Orders[0]
+	if first.ParentOrderSN != "PO-1" || first.SemiUniqueID != "semi-1" {
+		t.Fatalf("unexpected normalized order: %#v", first)
+	}
+	if payload.Data.QueriedAt.IsZero() {
+		t.Fatal("queried_at must be populated")
+	}
+	if upstreamRequest["type"] != temu.CombinedShipmentAPI {
+		t.Fatalf("unexpected upstream request: %#v", upstreamRequest)
 	}
 }
 

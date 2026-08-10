@@ -20,6 +20,8 @@ are never returned by HTTP APIs.
 9. Labels are downloaded server-side through `bg.logistics.shipment.document.get` and signed document headers.
 10. Actual handoff is confirmed separately with `bg.logistics.shipped.package.confirm`.
 
+The dashboard queries `bg.order.combinedshipment.list.get` live when an operator opens **可合并订单**. The call is scoped by the selected shop token and is not served from the local order cache.
+
 `submission_unknown` is deliberately not retried automatically. An external timeout may occur after Temu accepted a request, so retrying could purchase a duplicate label. An operator must reconcile it first.
 
 ## HTTP API
@@ -28,6 +30,7 @@ are never returned by HTTP APIs.
 GET    /api/system/token-status
 POST   /api/orders/sync
 GET    /api/orders
+GET    /api/combined-shipment-candidates
 GET    /api/orders/{parentOrderSN}
 GET    /api/orders/history
 GET    /api/orders/{parentOrderSN}/detail

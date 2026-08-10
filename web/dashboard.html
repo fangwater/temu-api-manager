@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260810-1" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260810-3" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -30,6 +30,7 @@
         <div class="brand"><span class="brand-mark">T</span><div><strong>Temu Fulfillment</strong><small>Order & Label Console</small></div></div>
         <nav class="nav" aria-label="主导航">
           <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
+          <button class="nav-button" data-view="combined"><svg><use href="#i-orders"/></svg><span>可合并订单</span><b id="nav-combined-count">0</b></button>
           <button class="nav-button" data-view="labels"><svg><use href="#i-download"/></svg><span>自动处理中</span><b id="nav-label-count">0</b></button>
           <button class="nav-button" data-view="exceptions"><svg><use href="#i-alert"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
           <button class="nav-button" data-view="manual"><svg><use href="#i-alert"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
@@ -69,6 +70,21 @@
               <div class="empty" id="orders-empty" hidden><svg><use href="#i-orders"/></svg><strong>没有待发货订单</strong><span>同步 Temu 后，符合条件的订单会显示在这里</span></div>
             </div>
             <div class="pager" id="orders-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-combined">
+            <div class="page-head"><div><h1>可合并订单</h1><p>Temu 当前店铺实时返回的可合并发货母订单组</p></div><button class="secondary-button" id="refresh-combined"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="status-band">
+              <div><small>候选组</small><strong id="metric-combined-groups">0</strong></div>
+              <div><small>母订单</small><strong id="metric-combined-orders">0</strong></div>
+              <div><small>当前店铺</small><strong class="compact" id="metric-combined-shop">-</strong></div>
+              <div><small>查询时间</small><strong class="compact" id="metric-combined-query">尚未查询</strong></div>
+            </div>
+            <div class="toolbar"><span class="table-note" id="combined-total">共 0 组 · 0 个母订单</span></div>
+            <div class="table-shell combined-table">
+              <table><thead><tr><th>候选组</th><th>母订单</th><th>订单状态</th><th>下单时间</th><th>Mall ID</th><th>店铺标识</th></tr></thead><tbody id="combined-rows"></tbody></table>
+              <div class="empty" id="combined-empty"><svg><use href="#i-orders"/></svg><strong>等待查询</strong><span>进入本页后会自动查询 Temu 可合并发货候选组</span></div>
+            </div>
           </section>
 
           <section class="view" id="view-labels">
@@ -227,6 +243,6 @@
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260810-2" defer></script>
+    <script src="./dashboard.js?v=20260810-4" defer></script>
   </body>
 </html>

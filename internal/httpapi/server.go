@@ -50,6 +50,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("GET /api/system/token-status", s.tokenStatus)
 	mux.HandleFunc("GET /api/system/store", s.storeIdentity)
 	mux.HandleFunc("GET /api/orders", s.listOrders)
+	mux.HandleFunc("GET /api/combined-shipment-candidates", s.combinedShipmentCandidates)
 	mux.HandleFunc("GET /api/orders/history", s.listOrderHistory)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/detail", s.getOrderDetail)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/shipment", s.getOrderShipment)
@@ -135,6 +136,17 @@ func (s *Server) listOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	syncStatus, _ := s.service.LatestSync(ctx)
 	writeJSON(w, http.StatusOK, response{Success: true, Data: items, Meta: map[string]any{"page": page, "page_size": pageSize, "total": total, "sync": syncStatus}})
+}
+
+func (s *Server) combinedShipmentCandidates(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.CombinedShipmentCandidates(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
 }
 
 func (s *Server) getOrder(w http.ResponseWriter, r *http.Request) {

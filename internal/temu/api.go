@@ -9,6 +9,7 @@ const (
 	TokenInfoAPI        = "bg.open.accesstoken.info.get"
 	OrderListAPI        = "bg.order.list.v2.get"
 	OrderDetailAPI      = "bg.order.detail.v2.get"
+	CombinedShipmentAPI = "bg.order.combinedshipment.list.get"
 	WarehouseListAPI    = "bg.logistics.warehouse.list.get"
 	ShippingServicesAPI = "bg.logistics.shippingservices.get"
 	ShipmentCreateAPI   = "bg.logistics.shipment.create"
@@ -84,6 +85,22 @@ type OrderPageItem struct {
 type OrderListResult struct {
 	PageItems    []OrderPageItem `json:"pageItems"`
 	TotalItemNum int             `json:"totalItemNum"`
+}
+
+type CombinedShipmentOrder struct {
+	ParentOrderSN     string `json:"parentOrderSn"`
+	ParentOrderStatus int    `json:"parentOrderStatus"`
+	ParentOrderTime   int64  `json:"parentOrderTime"`
+	MallID            int64  `json:"mallId"`
+	SemiUniqueID      string `json:"semiUniqueId"`
+}
+
+type CombinedShipmentGroup struct {
+	Orders []CombinedShipmentOrder `json:"combinedShippingGroup"`
+}
+
+type CombinedShipmentResult struct {
+	Groups []CombinedShipmentGroup `json:"combinedShippingGroups"`
 }
 
 type Warehouse struct {
@@ -205,6 +222,12 @@ func (c *Client) OrderDetail(ctx context.Context, parentOrderSN string) (OrderPa
 		"parentOrderSn":       parentOrderSN,
 		"fulfillmentTypeList": []string{"fulfillBySeller"},
 	}, &result)
+	return result, raw, err
+}
+
+func (c *Client) CombinedShipments(ctx context.Context) (CombinedShipmentResult, json.RawMessage, error) {
+	var result CombinedShipmentResult
+	raw, err := c.Call(ctx, CombinedShipmentAPI, nil, &result)
 	return result, raw, err
 }
 
