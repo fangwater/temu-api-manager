@@ -73,6 +73,8 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("POST /api/orders/{parentOrderSN}/warehouse-preview", s.previewWarehouses)
 	mux.HandleFunc("PATCH /api/warehouse-sku-specs/{warehouseSKU}/package", s.updateWarehouseSKUPackageSpec)
 	mux.HandleFunc("POST /api/shipping/quotes", s.createQuote)
+	mux.HandleFunc("POST /api/shipping/split-plan", s.prepareSplitPlan)
+	mux.HandleFunc("POST /api/shipping/split-quotes", s.quoteSplitPlan)
 	mux.HandleFunc("POST /api/shipping/purchase", s.purchase)
 	mux.HandleFunc("POST /api/auto-fulfillment/batches", s.startBulkFulfillment)
 	mux.HandleFunc("POST /api/auto-fulfillment/batches/restart", s.restartBulkFulfillment)

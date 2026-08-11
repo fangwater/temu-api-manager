@@ -101,6 +101,11 @@ type PackageSpecUpdate struct {
 	WeightKG float64 `json:"weight_kg"`
 }
 
+type PackageSpecResolveRequest struct {
+	WarehouseSKU string `json:"warehouse_sku"`
+	Quantity     int    `json:"quantity"`
+}
+
 type WarehouseSKUSpec struct {
 	WarehouseSKU string  `json:"warehouse_sku"`
 	LengthCM     float64 `json:"length_cm"`
@@ -181,6 +186,52 @@ func (c *Client) Query(ctx context.Context, quantities map[string]int) (Decision
 	return result.Data, nil
 }
 
+func (c *Client) ResolvePackageSpecs(ctx context.Context, items []PackageSpecResolveRequest) (PackageResolution, error) {
+	if len(items) == 0 {
+		return PackageResolution{}, errors.New("items are required")
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.WarehouseSKU) == "" || item.Quantity <= 0 {
+			return PackageResolution{}, errors.New("warehouse_sku and a positive quantity are required")
+		}
+	}
+	endpoint, err := c.managerEndpoint("/warehouse-sku-specs/resolve")
+	if err != nil {
+		return PackageResolution{}, err
+	}
+	body, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		return PackageResolution{}, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return PackageResolution{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return PackageResolution{}, fmt.Errorf("resolve warehouse SKU package specs: %w", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return PackageResolution{}, err
+	}
+	var result struct {
+		Success bool              `json:"success"`
+		Data    PackageResolution `json:"data"`
+		Error   string            `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return PackageResolution{}, errors.New("warehouse SKU package resolution returned invalid JSON")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || !result.Success {
+		return PackageResolution{}, fmt.Errorf("warehouse SKU package resolution failed: %s", result.Error)
+	}
+	return result.Data, nil
+}
+
 func (c *Client) UpdatePackageSpec(ctx context.Context, warehouseSKU string, update PackageSpecUpdate) (WarehouseSKUSpec, error) {
 	warehouseSKU = strings.TrimSpace(warehouseSKU)
 	if warehouseSKU == "" {
@@ -191,11 +242,10 @@ func (c *Client) UpdatePackageSpec(ctx context.Context, warehouseSKU string, upd
 			return WarehouseSKUSpec{}, fmt.Errorf("%s must be positive", name)
 		}
 	}
-	const decisionSuffix = "/temu/warehouse-availability/query"
-	if !strings.HasSuffix(c.url, decisionSuffix) {
-		return WarehouseSKUSpec{}, errors.New("warehouse decision URL cannot resolve the SKU package update endpoint")
+	endpoint, err := c.managerEndpoint("/warehouse-sku-specs/" + url.PathEscape(warehouseSKU) + "/package")
+	if err != nil {
+		return WarehouseSKUSpec{}, err
 	}
-	endpoint := strings.TrimSuffix(c.url, decisionSuffix) + "/warehouse-sku-specs/" + url.PathEscape(warehouseSKU) + "/package"
 	body, err := json.Marshal(update)
 	if err != nil {
 		return WarehouseSKUSpec{}, err
@@ -227,6 +277,14 @@ func (c *Client) UpdatePackageSpec(ctx context.Context, warehouseSKU string, upd
 		return WarehouseSKUSpec{}, fmt.Errorf("warehouse SKU package update failed: %s", result.Error)
 	}
 	return result.Data, nil
+}
+
+func (c *Client) managerEndpoint(path string) (string, error) {
+	const decisionSuffix = "/temu/warehouse-availability/query"
+	if !strings.HasSuffix(c.url, decisionSuffix) {
+		return "", errors.New("warehouse decision URL cannot resolve the warehouse manager endpoint")
+	}
+	return strings.TrimSuffix(c.url, decisionSuffix) + path, nil
 }
 
 type Selection struct {

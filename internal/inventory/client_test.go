@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,38 @@ func TestSelectWarehouseRejectsOverrideThatCannotCoverEverySKU(t *testing.T) {
 	}}
 	if _, err := SelectWarehouse(decision, "east", map[string]int{"A": 1, "B": 1}, "ARP_EAST"); err == nil {
 		t.Fatal("expected unavailable ARP override to fail")
+	}
+}
+
+func TestResolvePackageSpecsUsesWarehouseManagerEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Errorf("got method %s, want POST", request.Method)
+		}
+		if request.URL.Path != "/v1/warehouse-sku-specs/resolve" {
+			t.Errorf("unexpected path: %s", request.URL.Path)
+		}
+		var body struct {
+			Items []PackageSpecResolveRequest `json:"items"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if len(body.Items) != 1 || body.Items[0].WarehouseSKU != "SKU-1" || body.Items[0].Quantity != 3 {
+			t.Errorf("unexpected request: %#v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"complete":true,"items":[{"warehouse_sku":"SKU-1","quantity":3,"matched":true,"enabled":true,"complete":true,"length_cm":20,"width_cm":10,"height_cm":5,"weight_kg":0.8}],"missing_skus":[]}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	result, err := client.ResolvePackageSpecs(context.Background(), []PackageSpecResolveRequest{{WarehouseSKU: "SKU-1", Quantity: 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Complete || len(result.Items) != 1 || result.Items[0].WeightKG == nil || *result.Items[0].WeightKG != 0.8 {
+		t.Fatalf("unexpected resolution: %#v", result)
 	}
 }
 

@@ -16,6 +16,10 @@ state.combinedShipmentLoading = false;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+state.splitPlan = null;
+state.splitQuote = null;
+state.splitPlanRequestSequence = 0;
+state.splitQuoteRequestSequence = 0;
 
 const trackingStatusMappings = Object.freeze([
   { raw: "Last-Mile Manifest", zh: "待承运商揽收" },
@@ -1324,6 +1328,278 @@ function renderShipments() {
   renderPager("#ledger-pager", state.shipmentMeta, "ledger", () => loadShipmentQueue("ledger"));
 }
 
+const splitCarrierMeta = Object.freeze({
+  GOFO: { label: "GOFO", policy: "免费 POD", tone: "pod" },
+  USPS: { label: "USPS", policy: "无需签名", tone: "standard" },
+  FEDEX: { label: "FEDEX", policy: "强制签名", tone: "signature" },
+});
+
+function setSplitError(message = "") {
+  const element = $("#split-error");
+  element.textContent = message;
+  element.hidden = !message;
+}
+
+function formatSplitMoney(value, currency = "USD") {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "-";
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
+  } catch (_) {
+    return `$${amount.toFixed(2)} ${currency}`;
+  }
+}
+
+function splitPackageInputValue(value, decimals) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  return amount.toFixed(decimals).replace(/\.?0+$/, "");
+}
+
+function splitWarehouseLabel(warehouse) {
+  return [warehouse?.warehouse_key, warehouse?.warehouse_name].filter(Boolean).join(" · ") || "-";
+}
+
+function invalidateSplitQuote() {
+  state.splitQuote = null;
+  $("#split-quote-result").hidden = true;
+}
+
+async function loadSplitPlan(event) {
+  event?.preventDefault();
+  const parentOrderSN = $("#split-order-number").value.trim();
+  const packageCount = Number($("#split-package-count").value);
+  if (!parentOrderSN) {
+    setSplitError("请输入 Temu 父订单号");
+    $("#split-order-number").focus();
+    return;
+  }
+  if (!Number.isInteger(packageCount) || packageCount < 2 || packageCount > 20) {
+    setSplitError("包裹数必须是 2 到 20 之间的整数");
+    $("#split-package-count").focus();
+    return;
+  }
+
+  const previousWarehouse = state.splitPlan?.order?.parent_order_sn === parentOrderSN
+    ? $("#split-warehouse-select").value
+    : "";
+  const sequence = ++state.splitPlanRequestSequence;
+  state.splitQuoteRequestSequence += 1;
+  const button = $("#split-plan-button");
+  setLoading(button, true);
+  setSplitError("");
+  invalidateSplitQuote();
+
+  try {
+    const request = { parent_order_sn: parentOrderSN, package_count: packageCount };
+    if (previousWarehouse) request.warehouse_key = previousWarehouse;
+    const payload = await api("/shipping/split-plan", {
+      method: "POST",
+      body: JSON.stringify(request),
+      timeoutMs: 45000,
+    });
+    if (sequence !== state.splitPlanRequestSequence) return;
+    state.splitPlan = payload.data;
+    state.splitQuote = null;
+    renderSplitPlan();
+  } catch (error) {
+    if (sequence !== state.splitPlanRequestSequence) return;
+    state.splitPlan = null;
+    state.splitQuote = null;
+    $("#split-workspace").hidden = true;
+    $("#split-empty").hidden = false;
+    setSplitError(error.message);
+  } finally {
+    if (sequence === state.splitPlanRequestSequence) setLoading(button, false);
+  }
+}
+
+function renderSplitPlan() {
+  const plan = state.splitPlan;
+  if (!plan) return;
+  const warehouses = plan.warehouses || [];
+  const selectedWarehouseKey = plan.selected_warehouse_key || warehouses[0]?.warehouse_key || "";
+  const selectedWarehouse = warehouses.find((warehouse) => warehouse.warehouse_key === selectedWarehouseKey);
+
+  $("#split-empty").hidden = true;
+  $("#split-workspace").hidden = false;
+  $("#split-metric-order").textContent = plan.order?.parent_order_sn || "-";
+  $("#split-metric-units").textContent = plan.order?.total_units || 0;
+  $("#split-metric-packages").textContent = plan.packages?.length || 0;
+  $("#split-metric-warehouse").textContent = splitWarehouseLabel(selectedWarehouse);
+
+  const warehouseSelect = $("#split-warehouse-select");
+  warehouseSelect.innerHTML = warehouses.map((warehouse) =>
+    `<option value="${escapeHtml(warehouse.warehouse_key)}">${escapeHtml(splitWarehouseLabel(warehouse))}</option>`
+  ).join("");
+  warehouseSelect.value = selectedWarehouseKey;
+
+  const warnings = plan.warnings || [];
+  const warningList = $("#split-warnings");
+  warningList.hidden = warnings.length === 0;
+  warningList.innerHTML = warnings.map((warning) =>
+    `<div><svg><use href="#i-alert"/></svg><span>${escapeHtml(warning)}</span></div>`
+  ).join("");
+
+  $("#split-package-grid").innerHTML = (plan.packages || []).map((item, index) => {
+    const packageNumber = item.number || index + 1;
+    const badge = item.needs_measurement
+      ? '<span class="status-badge failed">需实测</span>'
+      : '<span class="status-badge pending">规格估算</span>';
+    const items = (item.items || []).map((line) => `
+      <div class="split-package-item">
+        <div><strong>${escapeHtml(line.warehouse_sku || "SKU 待映射")}</strong><small>${escapeHtml(line.product_name || line.order_sn)}</small></div>
+        <b>× ${line.quantity}</b>
+      </div>`).join("");
+    const field = (name, label, value, step, decimals) => `
+      <label><span>${label}</span><input type="number" min="${step}" max="10000" step="${step}" value="${splitPackageInputValue(value, decimals)}" data-split-field="${name}" required /></label>`;
+    return `<article class="split-package-card" data-split-package-index="${index}">
+      <header><div><small>拆分包裹</small><h3>#${packageNumber}</h3></div>${badge}</header>
+      <div class="split-package-items">${items}</div>
+      <div class="split-package-fields">
+        ${field("weight_kg", "重量 kg", item.weight_kg, "0.001", 3)}
+        ${field("length_cm", "长 cm", item.length_cm, "0.01", 2)}
+        ${field("width_cm", "宽 cm", item.width_cm, "0.01", 2)}
+        ${field("height_cm", "高 cm", item.height_cm, "0.01", 2)}
+      </div>
+    </article>`;
+  }).join("");
+
+  invalidateSplitQuote();
+}
+
+function selectedSplitCarriers() {
+  return $$('input[name="split-carrier"]:checked').map((input) => input.value);
+}
+
+function collectSplitPackages() {
+  const planPackages = state.splitPlan?.packages || [];
+  return $$(".split-package-card").map((card) => {
+    const index = Number(card.dataset.splitPackageIndex);
+    const source = planPackages[index];
+    const values = {};
+    card.querySelectorAll("[data-split-field]").forEach((input) => {
+      if (!input.checkValidity()) {
+        input.reportValidity();
+        throw new Error(`包裹 #${source?.number || index + 1} 的重量和尺寸必须填写为正数`);
+      }
+      values[input.dataset.splitField] = Number(input.value);
+    });
+    return {
+      number: source?.number || index + 1,
+      items: (source?.items || []).map((item) => ({ order_sn: item.order_sn, quantity: item.quantity })),
+      ...values,
+    };
+  });
+}
+
+async function quoteSplitPlan() {
+  const plan = state.splitPlan;
+  if (!plan) {
+    setSplitError("请先生成拆包方案");
+    return;
+  }
+  const carriers = selectedSplitCarriers();
+  if (carriers.length === 0) {
+    setSplitError("至少选择一家快递商");
+    return;
+  }
+  const warehouseKey = $("#split-warehouse-select").value;
+  if (!warehouseKey) {
+    setSplitError("请选择发货仓库");
+    return;
+  }
+
+  let packages;
+  try {
+    packages = collectSplitPackages();
+  } catch (error) {
+    setSplitError(error.message);
+    return;
+  }
+
+  const sequence = ++state.splitQuoteRequestSequence;
+  const button = $("#split-quote-button");
+  setLoading(button, true);
+  setSplitError("");
+  invalidateSplitQuote();
+
+  try {
+    const payload = await api("/shipping/split-quotes", {
+      method: "POST",
+      body: JSON.stringify({
+        parent_order_sn: plan.order.parent_order_sn,
+        warehouse_key: warehouseKey,
+        carriers,
+        packages,
+      }),
+      timeoutMs: 60000,
+    });
+    if (sequence !== state.splitQuoteRequestSequence) return;
+    state.splitQuote = payload.data;
+    renderSplitQuote();
+  } catch (error) {
+    if (sequence !== state.splitQuoteRequestSequence) return;
+    setSplitError(error.message);
+  } finally {
+    if (sequence === state.splitQuoteRequestSequence) setLoading(button, false);
+  }
+}
+
+function splitQuoteCell(code, quote, currency) {
+  if (!quote) return '<td><span class="split-not-selected">未参与</span></td>';
+  if (!quote.available) {
+    return `<td><div class="split-price-cell unavailable"><strong>不可用</strong><small title="${escapeHtml(quote.unavailable_reason || "")}">${escapeHtml(quote.unavailable_reason || "当前包裹不支持")}</small></div></td>`;
+  }
+  const service = [quote.shipping_company_name, quote.ship_logistics_type].filter(Boolean).join(" · ") || code;
+  const marker = quote.signature_required ? "签名" : quote.proof_of_delivery_included ? "POD" : "无签名";
+  return `<td><div class="split-price-cell"><strong>${formatSplitMoney(quote.amount, quote.currency || currency)}</strong><small>${escapeHtml(service)}</small><span class="split-service-tag ${splitCarrierMeta[code]?.tone || ""}">${marker}</span></div></td>`;
+}
+
+function renderSplitQuote() {
+  const result = state.splitQuote;
+  if (!result) return;
+  const currency = result.currency || "USD";
+  const packages = result.packages || [];
+
+  $("#split-quote-result").hidden = false;
+  $("#split-mixed-total").textContent = result.mixed_total == null ? "无完整方案" : formatSplitMoney(result.mixed_total, currency);
+  $("#split-quote-warehouse").textContent = splitWarehouseLabel(result.warehouse);
+  $("#split-quoted-packages").textContent = packages.length;
+  $("#split-quote-currency").textContent = currency;
+  $("#split-quote-time").textContent = `查询于 ${formatTime(result.queried_at)}`;
+
+  $("#split-carrier-totals").innerHTML = (result.carrier_totals || []).map((total) => {
+    const meta = splitCarrierMeta[total.carrier_code] || { label: total.carrier_code, policy: "" };
+    const missing = total.unavailable_packages || [];
+    const detail = total.available
+      ? `全部 ${packages.length} 个包裹可用`
+      : `包裹 ${missing.map((number) => `#${number}`).join("、")} 不可用`;
+    return `<article class="split-carrier-total ${total.available ? "" : "unavailable"}">
+      <div><span>${escapeHtml(meta.policy)}</span><strong>${escapeHtml(meta.label)}</strong></div>
+      <div><strong>${total.available && total.amount != null ? formatSplitMoney(total.amount, total.currency || currency) : "无法整单承运"}</strong><small>${escapeHtml(detail)}</small></div>
+    </article>`;
+  }).join("");
+
+  $("#split-quote-rows").innerHTML = packages.map((item, index) => {
+    const packageValue = item.package || {};
+    const packageNumber = packageValue.number || index + 1;
+    const carrierQuotes = new Map((item.carriers || []).map((quote) => [quote.carrier_code, quote]));
+    const dimensions = [packageValue.length_cm, packageValue.width_cm, packageValue.height_cm]
+      .map((value) => splitPackageInputValue(value, 2) || "-")
+      .join(" × ");
+    const recommended = item.recommended_amount == null
+      ? '<div class="split-recommended unavailable"><strong>无可用渠道</strong></div>'
+      : `<div class="split-recommended"><strong>${formatSplitMoney(item.recommended_amount, currency)}</strong><small>${escapeHtml(item.recommended_carrier)}</small></div>`;
+    return `<tr>
+      <td><div class="split-package-summary"><strong>包裹 #${packageNumber}</strong><small>${splitPackageInputValue(packageValue.weight_kg, 3)} kg · ${dimensions} cm</small></div></td>
+      ${splitQuoteCell("GOFO", carrierQuotes.get("GOFO"), currency)}
+      ${splitQuoteCell("USPS", carrierQuotes.get("USPS"), currency)}
+      ${splitQuoteCell("FEDEX", carrierQuotes.get("FEDEX"), currency)}
+      <td>${recommended}</td>
+    </tr>`;
+  }).join("");
+}
 function requireOperationKey(purpose) {
   if (state.operationKey) return Promise.resolve(state.operationKey);
   $("#key-purpose").textContent = purpose; $("#operation-key").value = ""; $("#key-dialog").showModal();
@@ -1334,7 +1610,7 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
   if (view === "combined") loadCombinedShipmentCandidates();
@@ -1348,6 +1624,22 @@ function switchView(view) {
 }
 
 $$('.nav-button').forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
+$("#split-plan-form").addEventListener("submit", loadSplitPlan);
+$("#split-quote-button").addEventListener("click", quoteSplitPlan);
+$("#split-warehouse-select").addEventListener("change", (event) => {
+  const selected = state.splitPlan?.warehouses?.find((warehouse) => warehouse.warehouse_key === event.target.value);
+  $("#split-metric-warehouse").textContent = splitWarehouseLabel(selected);
+  setSplitError("");
+  invalidateSplitQuote();
+});
+$("#split-package-grid").addEventListener("input", () => {
+  setSplitError("");
+  invalidateSplitQuote();
+});
+$$('input[name="split-carrier"]').forEach((input) => input.addEventListener("change", () => {
+  setSplitError("");
+  invalidateSplitQuote();
+}));
 $("#menu-button").addEventListener("click", () => { $("#sidebar").classList.add("open"); $("#backdrop").classList.add("visible"); });
 $("#backdrop").addEventListener("click", () => { $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible"); });
 $("#sync-orders").addEventListener("click", syncOrders);

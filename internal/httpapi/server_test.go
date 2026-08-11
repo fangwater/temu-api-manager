@@ -114,6 +114,25 @@ func TestPolicyUpdatesSkipOperationKeyOnly(t *testing.T) {
 	}
 }
 
+func TestSplitShippingRoutesDecodeRequestsWithoutOperationKey(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := New(nil, "secret", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
+
+	for _, path := range []string{"/api/shipping/split-plan", "/api/shipping/split-quotes"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{"))
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("got status %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "operation key") {
+				t.Fatalf("read-only quote route unexpectedly requires operation key: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestSanitizeWarehouseFilename(t *testing.T) {
 	tests := map[string]string{
 		"DPS002":       "DPS002",

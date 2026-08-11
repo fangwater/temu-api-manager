@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260810-3" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260811-3" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
       <symbol id="i-orders" viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 8h6M9 12h6M9 16h4"/></symbol>
       <symbol id="i-truck" viewBox="0 0 24 24"><path d="M3 6h11v11H3zM14 10h4l3 3v4h-7zM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM18 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/></symbol>
       <symbol id="i-warehouse" viewBox="0 0 24 24"><path d="m3 10 9-6 9 6v10H3zM7 13h10M7 17h10"/></symbol>
+      <symbol id="i-package" viewBox="0 0 24 24"><path d="m3 8 9-5 9 5-9 5zM3 8v8l9 5 9-5V8M12 13v8"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></symbol>
       <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
@@ -31,6 +32,7 @@
         <nav class="nav" aria-label="主导航">
           <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
           <button class="nav-button" data-view="combined"><svg><use href="#i-orders"/></svg><span>可合并订单</span><b id="nav-combined-count">0</b></button>
+          <button class="nav-button" data-view="split-quotes" hidden><svg><use href="#i-package"/></svg><span>拆包询价</span></button>
           <button class="nav-button" data-view="labels"><svg><use href="#i-download"/></svg><span>自动处理中</span><b id="nav-label-count">0</b></button>
           <button class="nav-button" data-view="exceptions"><svg><use href="#i-alert"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
           <button class="nav-button" data-view="manual"><svg><use href="#i-alert"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
@@ -84,6 +86,60 @@
             <div class="table-shell combined-table">
               <table><thead><tr><th>候选组</th><th>母订单</th><th>订单状态</th><th>下单时间</th><th>Mall ID</th><th>店铺标识</th></tr></thead><tbody id="combined-rows"></tbody></table>
               <div class="empty" id="combined-empty"><svg><use href="#i-orders"/></svg><strong>等待查询</strong><span>进入本页后会自动查询 Temu 可合并发货候选组</span></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-split-quotes">
+            <div class="page-head">
+              <div><h1>拆包询价</h1><p>按实际装箱数据比较 GOFO、USPS 与 FEDEX 的 Temu Buy Label 运费</p></div>
+            </div>
+            <form class="split-plan-bar" id="split-plan-form">
+              <label class="split-order-field"><span>Temu 父订单号</span><input id="split-order-number" type="text" placeholder="PO-..." autocomplete="off" spellcheck="false" required /></label>
+              <label class="split-count-field"><span>至少拆为</span><span class="split-count-input"><input id="split-package-count" type="number" min="2" max="20" step="1" value="3" required /><small>个包裹</small></span></label>
+              <fieldset class="split-carrier-picker">
+                <legend>参与比价</legend>
+                <label><input type="checkbox" name="split-carrier" value="GOFO" checked /><span><strong>GOFO</strong><small>免费 POD</small></span></label>
+                <label><input type="checkbox" name="split-carrier" value="USPS" checked /><span><strong>USPS</strong><small>无需签名</small></span></label>
+                <label><input type="checkbox" name="split-carrier" value="FEDEX" checked /><span><strong>FEDEX</strong><small>强制签名</small></span></label>
+              </fieldset>
+              <button class="primary-button split-plan-submit" id="split-plan-button" type="submit"><svg><use href="#i-package"/></svg><span>生成拆包方案</span></button>
+            </form>
+            <div class="split-error" id="split-error" role="alert" hidden></div>
+            <div class="split-empty" id="split-empty">
+              <svg><use href="#i-package"/></svg>
+              <strong>尚未生成拆包方案</strong>
+              <span>当前店铺没有已载入的拆包询价</span>
+            </div>
+            <div class="split-workspace" id="split-workspace" hidden>
+              <div class="status-band split-plan-metrics">
+                <div><small>父订单</small><strong class="compact" id="split-metric-order">-</strong></div>
+                <div><small>商品总件数</small><strong id="split-metric-units">0</strong></div>
+                <div><small>包裹数</small><strong id="split-metric-packages">0</strong></div>
+                <div><small>当前仓库</small><strong class="compact" id="split-metric-warehouse">-</strong></div>
+              </div>
+              <div class="split-section-head">
+                <div><h2>装箱明细</h2><span>重量 kg · 尺寸 cm</span></div>
+                <div class="split-quote-controls">
+                  <label><span>发货仓库</span><select id="split-warehouse-select" aria-label="选择拆包发货仓库"></select></label>
+                  <button class="primary-button" id="split-quote-button" type="button"><svg><use href="#i-search"/></svg><span>获取运费报价</span></button>
+                </div>
+              </div>
+              <div class="split-warning-list" id="split-warnings" hidden></div>
+              <div class="split-package-grid" id="split-package-grid"></div>
+              <section class="split-quote-result" id="split-quote-result" hidden>
+                <div class="section-title split-result-title"><h2>报价结果</h2><span id="split-quote-time">-</span></div>
+                <div class="status-band split-quote-metrics">
+                  <div><small>混合最低总价</small><strong id="split-mixed-total">-</strong></div>
+                  <div><small>报价仓库</small><strong class="compact" id="split-quote-warehouse">-</strong></div>
+                  <div><small>已报价包裹</small><strong id="split-quoted-packages">0</strong></div>
+                  <div><small>报价币种</small><strong class="compact" id="split-quote-currency">USD</strong></div>
+                </div>
+                <div class="split-carrier-totals" id="split-carrier-totals"></div>
+                <div class="section-title split-table-title"><h2>逐包价格</h2><span>最低价按单包标记</span></div>
+                <div class="table-shell split-quote-table">
+                  <table><thead><tr><th>包裹 / 规格</th><th>GOFO</th><th>USPS</th><th>FEDEX</th><th>单包最低</th></tr></thead><tbody id="split-quote-rows"></tbody></table>
+                </div>
+              </section>
             </div>
           </section>
 
@@ -243,6 +299,6 @@
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260810-4" defer></script>
+    <script src="./dashboard.js?v=20260811-3" defer></script>
   </body>
 </html>
