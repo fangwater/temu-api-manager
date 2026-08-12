@@ -440,7 +440,7 @@ ORDER BY w.warehouse_name
 	}
 	mrows, err := p.pool.Query(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$1 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -455,7 +455,7 @@ ORDER BY m.oms_warehouse_key
 	mappings := []model.WarehouseMapping{}
 	for mrows.Next() {
 		var m model.WarehouseMapping
-		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.UpdatedAt); err != nil {
+		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.OMSAccount, &m.UpdatedAt); err != nil {
 			return nil, nil, err
 		}
 		mappings = append(mappings, m)
@@ -463,7 +463,7 @@ ORDER BY m.oms_warehouse_key
 	return warehouses, mappings, mrows.Err()
 }
 
-func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode string) (model.WarehouseMapping, error) {
+func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
 	temuID = strings.TrimSpace(temuID)
 	logicalKey := omsKey
@@ -475,14 +475,15 @@ LIMIT 1
 `, temuID, p.shopCode).Scan(&logicalKey)
 	_, err := p.pool.Exec(ctx, `
 INSERT INTO public.temu_warehouse_mappings(
-oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,logical_warehouse_key
-) VALUES($1,$2,$3,$4)
+oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,oms_account,logical_warehouse_key
+) VALUES($1,$2,$3,$4,$5)
 ON CONFLICT(oms_warehouse_key) DO UPDATE SET
 temu_warehouse_id=EXCLUDED.temu_warehouse_id,
 oms_warehouse_code=EXCLUDED.oms_warehouse_code,
+oms_account=EXCLUDED.oms_account,
 logical_warehouse_key=EXCLUDED.logical_warehouse_key,
 updated_at=now()
-`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), logicalKey)
+`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), strings.ToLower(strings.TrimSpace(omsAccount)), logicalKey)
 	if err != nil {
 		return model.WarehouseMapping{}, err
 	}
@@ -498,7 +499,7 @@ func (p *Postgres) WarehouseMapping(ctx context.Context, omsKey string) (model.W
 	var m model.WarehouseMapping
 	err := p.pool.QueryRow(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -507,7 +508,7 @@ LEFT JOIN public.temu_warehouses canonical ON canonical.warehouse_id=m.temu_ware
 WHERE m.oms_warehouse_key=$1
 `, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(
 		&m.OMSKey, &m.TemuWarehouseID, &m.TemuName,
-		&m.OMSWarehouseCode, &m.UpdatedAt,
+		&m.OMSWarehouseCode, &m.OMSAccount, &m.UpdatedAt,
 	)
 	return m, err
 }
@@ -1192,7 +1193,7 @@ func (p *Postgres) StartOMSSync(ctx context.Context, shipmentID string, mapping 
 			tracking_number=EXCLUDED.tracking_number,
 			attempts=temu_oms_sync_checks.attempts+1,
 			error_message='',updated_at=now()
-		WHERE temu_oms_sync_checks.status <> 'verified'
+		WHERE temu_oms_sync_checks.status NOT IN ('verified','manual_required')
 		  AND (temu_oms_sync_checks.status <> 'querying'
 		       OR temu_oms_sync_checks.updated_at < now()-interval '2 minutes')
 		RETURNING shipment_id,oms_warehouse_key,warehouse_code,status,
@@ -1283,7 +1284,7 @@ JOIN public.temu_warehouse_mappings m ON m.oms_warehouse_key=q.oms_warehouse_key
 		  AND s.tracking_number <> ''
 		  AND cardinality(s.package_sn_list) > 0
 		  AND m.oms_warehouse_code <> ''
-		  AND (d.shipment_id IS NULL OR (d.status <> 'verified' AND d.updated_at < $1))
+		  AND (d.shipment_id IS NULL OR (d.status NOT IN ('verified','manual_required') AND d.updated_at < $1))
 		ORDER BY s.confirmed_at, s.created_at
 		LIMIT $2
 	`, retryBefore, limit)

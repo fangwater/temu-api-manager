@@ -105,12 +105,15 @@ CREATE TABLE IF NOT EXISTS public.temu_warehouse_mappings (
     temu_warehouse_id text NOT NULL REFERENCES public.temu_warehouses(warehouse_id),
 logical_warehouse_key text NOT NULL DEFAULT '',
     oms_warehouse_code text NOT NULL DEFAULT '',
+    oms_account text NOT NULL,
+    CONSTRAINT temu_warehouse_mappings_oms_account_check CHECK (oms_account IN ('dps', 'arp')),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE public.temu_warehouse_mappings
 ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '',
-ADD COLUMN IF NOT EXISTS logical_warehouse_key text NOT NULL DEFAULT '';
+ADD COLUMN IF NOT EXISTS logical_warehouse_key text NOT NULL DEFAULT '',
+ADD COLUMN IF NOT EXISTS oms_account text;
 
 UPDATE public.temu_warehouse_mappings SET
     oms_warehouse_code = CASE oms_warehouse_key
@@ -119,6 +122,24 @@ UPDATE public.temu_warehouse_mappings SET
         WHEN 'ARP_EAST' THEN 'HYTX30'
         ELSE oms_warehouse_code END
 WHERE oms_warehouse_code = '';
+
+UPDATE public.temu_warehouse_mappings
+SET oms_account=lower(trim(oms_account))
+WHERE oms_account IS NOT NULL;
+
+UPDATE public.temu_warehouse_mappings
+SET oms_account=CASE
+    WHEN upper(trim(oms_warehouse_key)) LIKE 'DPS%'
+      OR upper(trim(oms_warehouse_code)) LIKE 'DPS%' THEN 'dps'
+    WHEN upper(trim(oms_warehouse_key)) LIKE 'ARP%' THEN 'arp'
+    ELSE oms_account END
+WHERE coalesce(trim(oms_account),'')='';
+
+ALTER TABLE public.temu_warehouse_mappings
+    DROP CONSTRAINT IF EXISTS temu_warehouse_mappings_oms_account_check,
+    ALTER COLUMN oms_account SET NOT NULL,
+    ADD CONSTRAINT temu_warehouse_mappings_oms_account_check
+        CHECK (oms_account IN ('dps', 'arp'));
 
 UPDATE public.temu_warehouse_mappings
 SET logical_warehouse_key=oms_warehouse_key
@@ -318,7 +339,7 @@ WHERE status IN ('pushing', 'verification_pending');
 ALTER TABLE temu_oms_sync_checks
     DROP COLUMN IF EXISTS strategy,
     ADD CONSTRAINT temu_oms_sync_checks_status_check
-        CHECK (status IN ('querying', 'waiting_sync', 'verified', 'failed'));
+        CHECK (status IN ('querying', 'waiting_sync', 'verified', 'failed', 'manual_required'));
 
 DROP INDEX IF EXISTS temu_oms_dispatches_status_idx;
 CREATE INDEX IF NOT EXISTS temu_oms_sync_checks_status_idx

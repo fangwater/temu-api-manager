@@ -583,7 +583,7 @@ func (s *Service) SyncWarehouses(ctx context.Context) ([]model.Warehouse, []mode
 func (s *Service) ListWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
 	return s.store.ListWarehouses(ctx)
 }
-func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode string) (model.WarehouseMapping, error) {
+func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
 	if reason := disabledOMSWarehouseReason(omsKey); reason != "" {
 		return model.WarehouseMapping{}, errors.New(reason)
@@ -592,7 +592,11 @@ func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWa
 	if omsWarehouseCode == "" {
 		return model.WarehouseMapping{}, errors.New("oms_warehouse_code is required")
 	}
-	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode)
+	omsAccount, ok := normalizeOMSAccount(omsAccount)
+	if !ok {
+		return model.WarehouseMapping{}, errors.New("oms_account must be dps or arp")
+	}
+	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode, omsAccount)
 }
 func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) error {
 	return s.store.DeleteWarehouseMapping(ctx, omsKey)
@@ -1987,44 +1991,16 @@ func (s *Service) CheckOMSSync(ctx context.Context, id string) (model.Shipment, 
 		if current.Status == "verified" || current.Status == "querying" {
 			return s.store.GetShipment(ctx, shipment.ID)
 		}
+		if current.Status == "manual_required" {
+			updated, refreshErr := s.store.GetShipment(ctx, shipment.ID)
+			if refreshErr != nil {
+				return shipment, refreshErr
+			}
+			return updated, fmt.Errorf("%w: %s", errOMSManualRequired, current.ErrorMessage)
+		}
 		return shipment, nil
 	}
-
-	order, err := s.store.GetOrder(ctx, shipment.ParentOrderSN)
-	if err != nil {
-		return s.failOMSSync(ctx, shipment, nil, err)
-	}
-	references := []string{order.ParentOrderSN}
-	for _, line := range order.Lines {
-		references = append(references, line.OrderSN)
-	}
-	orders, err := s.oms.QueryByReferences(ctx, mapping.OMSWarehouseCode, references)
-	if err != nil {
-		return s.failOMSSync(ctx, shipment, nil, err)
-	}
-	orders = matchingOMSOrders(orders, mapping.OMSWarehouseCode)
-	if len(orders) == 0 {
-		message := "Temu 已确认发货，等待领星平台订单、平台面单和跟踪号自动同步；本服务只查询，不创建出库单也不回填面单"
-		if err := s.store.UpdateOMSSync(ctx, shipment.ID, "waiting_sync", nil, shipment.TrackingNumber, omsSyncSummary(mapping, nil, false), message); err != nil {
-			return shipment, err
-		}
-		return s.store.GetShipment(ctx, shipment.ID)
-	}
-	if len(orders) > 1 {
-		return s.failOMSSync(ctx, shipment, orders, fmt.Errorf("领星返回 %d 个匹配出库单，无法确定唯一目标，需人工核对", len(orders)))
-	}
-	target := orders[0]
-	if omsTrackingVerified(target, shipment.TrackingNumber) {
-		if err := s.store.UpdateOMSSync(ctx, shipment.ID, "verified", []string{target.OutboundOrderNo}, shipment.TrackingNumber, omsSyncSummary(mapping, &target, true), ""); err != nil {
-			return shipment, err
-		}
-		return s.store.GetShipment(ctx, shipment.ID)
-	}
-	message := "已查询到领星出库单，等待平台面单和跟踪号自动同步；本服务不会向领星写入数据"
-	if err := s.store.UpdateOMSSync(ctx, shipment.ID, "waiting_sync", []string{target.OutboundOrderNo}, shipment.TrackingNumber, omsSyncSummary(mapping, &target, false), message); err != nil {
-		return shipment, err
-	}
-	return s.store.GetShipment(ctx, shipment.ID)
+	return s.reconcileOMSPlatformOrder(ctx, shipment, mapping)
 }
 
 func (s *Service) failOMSSync(ctx context.Context, shipment model.Shipment, orders []oms.OutboundOrder, cause error) (model.Shipment, error) {
@@ -2442,7 +2418,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			updated, checkErr := s.CheckOMSSync(ctx, shipment.ID)
 			shipment = updated
 			if checkErr != nil {
-				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, "waiting_oms", checkErr.Error())
+				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, autoFulfillmentOMSFailureStatus(checkErr), checkErr.Error())
 				return checkErr
 			}
 			if shipment.OMSSync != nil && shipment.OMSSync.Status == "verified" {

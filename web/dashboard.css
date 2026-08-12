@@ -19,7 +19,7 @@
 .package-spec-editor[hidden]{display:none}
 
 .mapping-grid{grid-template-columns:1fr}
-.mapping-row{grid-template-columns:minmax(110px,.65fr) minmax(130px,.7fr) minmax(210px,1.2fr) minmax(190px,1fr) auto}
+.mapping-row{grid-template-columns:minmax(110px,.65fr) minmax(110px,.55fr) minmax(130px,.7fr) minmax(210px,1.2fr) minmax(150px,.8fr) auto}
 .mapping-row input{width:100%;height:34px}
 .oms-sync-check{min-width:150px;display:flex;flex-direction:column;align-items:flex-start;gap:5px}
 .oms-sync-check small{max-width:220px;color:#737b80;font-size:9px;line-height:13px;overflow-wrap:anywhere}

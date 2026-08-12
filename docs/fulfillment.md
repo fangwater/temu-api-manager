@@ -20,6 +20,32 @@ are never returned by HTTP APIs.
 9. Labels are downloaded server-side through `bg.logistics.shipment.document.get` and signed document headers.
 10. Actual handoff is confirmed separately with `bg.logistics.shipped.package.confirm`.
 
+## OMS platform-order reconciliation
+
+After a label is purchased, the selected label-purchase warehouse determines
+which XLWMS account is queried. Reconciliation uses the XLWMS exact platform
+order endpoint over all platform orders; it does not synchronize an account's
+order table or limit the query to pending orders.
+
+Every warehouse mapping must bind an `oms_account` of `dps` or `arp`. The
+configuration API and database reject unbound mappings, and reconciliation uses
+this stored ownership instead of inferring an account from a warehouse name.
+XLWMS centrally limits each account to two concurrent exact-order queries and
+spaces query starts by at least 500 milliseconds, so multiple shops share one
+bounded queue while historical ledger entries are reconciled.
+
+The normalized outcomes are:
+
+- no matching order: wait for up to 30 minutes after label confirmation, then mark the shipment for manual supplement;
+- status `0` (`待处理`): keep waiting for OMS matching;
+- status `1` (`待获取平台面单`): keep waiting for the platform label;
+- status `2` (`处理中`) or `3` (`已发货`): verify the selected warehouse and complete the automatic-fulfillment ledger entry;
+- status `4`, `5`, `6`, an unknown status, a warehouse mismatch, or duplicate matches: require manual handling.
+
+Every check also queries the other account (`dps` or `arp`). If the non-selected account has a
+status `2` or `3` order, reconciliation stops for manual collision review. This
+also catches the explicit case where both isolated accounts show status `3`.
+
 The dashboard queries `bg.order.combinedshipment.list.get` live when an operator opens **可合并订单**. The call is scoped by the selected shop token and is not served from the local order cache.
 
 `submission_unknown` is deliberately not retried automatically. An external timeout may occur after Temu accepted a request, so retrying could purchase a duplicate label. An operator must reconcile it first.

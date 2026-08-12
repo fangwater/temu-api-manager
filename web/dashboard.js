@@ -588,6 +588,11 @@ const omsWarehouses = [
   { key: "ARP_WEST", name: "ARP美西", region: "美西", code: "ARPCA01", disabled: true },
 ];
 
+const omsAccounts = [
+  { key: "dps", label: "DPS 账户" },
+  { key: "arp", label: "ARP 账户" },
+];
+
 function renderWarehouses() {
   const enabled = state.warehouses.filter((warehouse) => warehouse.enable_buy_shipping_label);
   const mappingByKey = Object.fromEntries(state.mappings.map((mapping) => [mapping.oms_warehouse_key, mapping]));
@@ -598,6 +603,7 @@ function renderWarehouses() {
     const mapping = mappingByKey[warehouse.key] || {};
     return `<div class="mapping-row">
       <div class="mapping-name"><strong>${warehouse.name}</strong><span>${warehouse.region} · 业务仓标识</span></div>
+      <label><span>领星账户</span><select data-oms-account="${warehouse.key}"><option value="">请选择账户</option>${omsAccounts.map((account) => `<option value="${account.key}" ${mapping.oms_account === account.key ? "selected" : ""}>${account.label}</option>`).join("")}</select></label>
       <label><span>领星仓库代码</span><input data-oms-code="${warehouse.key}" value="${escapeHtml(mapping.oms_warehouse_code || warehouse.code)}" /></label>
       <label><span>Temu Buy Label 仓库</span><select data-mapping-select="${warehouse.key}"><option value="">请选择仓库</option>${enabled.map((item) => `<option value="${escapeHtml(item.warehouse_id)}" ${mapping.temu_warehouse_id === item.warehouse_id ? "selected" : ""}>${escapeHtml(item.warehouse_name)} · ${escapeHtml(item.warehouse_id)}</option>`).join("")}</select></label>
       <div class="mapping-readonly"><small>领星同步</small><strong>只读自动查询</strong></div>
@@ -751,8 +757,10 @@ async function saveSKUWarehouseRule(warehouseSKU, button) {
 async function saveMapping(key) {
   const select = $(`[data-mapping-select="${key}"]`);
   const omsCode = $(`[data-oms-code="${key}"]`);
+  const omsAccount = $(`[data-oms-account="${key}"]`);
   if (!select.value) return toast("请选择 Temu 仓库", true);
   if (!omsCode.value.trim()) return toast("请填写领星仓库代码", true);
+  if (!omsAccount.value) return toast("请选择领星账户", true);
   const operationKey = await requireOperationKey("保存仓库映射"); if (!operationKey) return;
   try {
     await api(`/warehouse-mappings/${key}`, {
@@ -760,6 +768,7 @@ async function saveMapping(key) {
       body: JSON.stringify({
         temu_warehouse_id: select.value,
         oms_warehouse_code: omsCode.value.trim(),
+        oms_account: omsAccount.value,
       }),
     });
     toast(`${key} 仓库配置已保存`); await loadWarehouses();
@@ -1256,8 +1265,9 @@ function omsSyncCell(shipment) {
     waiting_sync: "等待领星确认",
     verified: "领星已确认",
     failed: "等待重试领星查询",
+    manual_required: "领星需人工处理",
   };
-  const tone = sync?.status === "verified" ? "" : sync?.status === "failed" ? "failed" : "pending";
+  const tone = sync?.status === "verified" ? "" : ["failed", "manual_required"].includes(sync?.status) ? "failed" : "pending";
   const label = sync ? statusLabels[sync.status] || sync.status : "等待领星确认";
   const detail = sync?.error_message || warehouse;
   return `<div class="oms-sync-check"><span class="status-badge ${tone}">${escapeHtml(label)}</span><small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small></div>`;

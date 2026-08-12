@@ -144,6 +144,7 @@ type Warehouse struct {
 type WarehouseMapping struct {
 	OMSKey           string    `json:"oms_warehouse_key"`
 	OMSWarehouseCode string    `json:"oms_warehouse_code"`
+	OMSAccount       string    `json:"oms_account"`
 	TemuWarehouseID  string    `json:"temu_warehouse_id"`
 	TemuName         string    `json:"temu_warehouse_name"`
 	UpdatedAt        time.Time `json:"updated_at"`

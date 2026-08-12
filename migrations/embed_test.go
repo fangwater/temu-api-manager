@@ -46,6 +46,24 @@ func TestInitSQLIncludesSkippedAutoFulfillmentStatus(t *testing.T) {
 	}
 }
 
+func TestInitSQLIncludesOMSManualRequiredStatus(t *testing.T) {
+	if !strings.Contains(InitSQL, "'failed', 'manual_required'") {
+		t.Fatal("InitSQL is missing the OMS manual-required terminal status")
+	}
+}
+
+func TestInitSQLRequiresWarehouseOMSAccountOwnership(t *testing.T) {
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS oms_account text",
+		"ALTER COLUMN oms_account SET NOT NULL",
+		"CHECK (oms_account IN ('dps', 'arp'))",
+	} {
+		if !strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL is missing %q", fragment)
+		}
+	}
+}
+
 func TestInitSQLIncludesSafeShipmentSubmissionRetryStorage(t *testing.T) {
 	for _, fragment := range []string{"submission_attempts integer", "last_submission_at timestamptz", "GREATEST(submission_attempts,1)", "confirmation_attempts integer", "last_confirmation_at timestamptz", "failed_carrier_codes text[]"} {
 		if !strings.Contains(InitSQL, fragment) {

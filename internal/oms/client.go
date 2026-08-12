@@ -8,14 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 type Client struct {
-	baseURL  string
-	auditURL string
-	http     *http.Client
+	baseURL          string
+	auditURL         string
+	platformOrderURL string
+	http             *http.Client
 }
 
 type FulfillmentAuditSnapshotOrder struct {
@@ -47,6 +49,31 @@ type OutboundOrder struct {
 	LogisticsChannel string `json:"logisticsChannel"`
 }
 
+type PlatformOrder struct {
+	OMSOrderNo         string `json:"oms_order_no"`
+	PlatformOrderNo    string `json:"platform_order_no"`
+	Status             int    `json:"status"`
+	StatusKey          string `json:"status_key"`
+	StatusText         string `json:"status_text"`
+	SubStatus          int    `json:"sub_status"`
+	SendWarehouseCode  string `json:"send_warehouse_code"`
+	TrackingNumber     string `json:"tracking_number"`
+	OrderTime          string `json:"order_time"`
+	CreateTime         string `json:"create_time"`
+	AuditTime          string `json:"audit_time"`
+	MarkShipmentStatus int    `json:"mark_shipment_status"`
+	MarkShipmentTime   string `json:"mark_shipment_time"`
+}
+
+type PlatformOrderLookup struct {
+	Account         string          `json:"account"`
+	PlatformOrderNo string          `json:"platform_order_no"`
+	Found           bool            `json:"found"`
+	MatchCount      int             `json:"match_count"`
+	Orders          []PlatformOrder `json:"orders"`
+	QueriedAt       time.Time       `json:"queried_at"`
+}
+
 type gatewayResponse struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data"`
@@ -62,7 +89,55 @@ type apiResponse struct {
 func NewClient(baseURL string, timeout time.Duration) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	root := strings.TrimSuffix(baseURL, "/outbound")
-	return &Client{baseURL: baseURL, auditURL: root + "/fulfillment-audits/sync", http: &http.Client{Timeout: timeout}}
+	return &Client{
+		baseURL: baseURL, auditURL: root + "/fulfillment-audits/sync",
+		platformOrderURL: root + "/temu/platform-orders", http: &http.Client{Timeout: timeout},
+	}
+}
+
+func (c *Client) QueryPlatformOrder(ctx context.Context, account, platformOrderNo string) (PlatformOrderLookup, error) {
+	account = strings.TrimSpace(account)
+	platformOrderNo = strings.TrimSpace(platformOrderNo)
+	if account == "" {
+		return PlatformOrderLookup{}, errors.New("OMS account is required")
+	}
+	if platformOrderNo == "" {
+		return PlatformOrderLookup{}, errors.New("platform order number is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.platformOrderURL+"/"+url.PathEscape(platformOrderNo), nil)
+	if err != nil {
+		return PlatformOrderLookup{}, err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("X-OMS-Account", account)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return PlatformOrderLookup{}, fmt.Errorf("query XLWMS platform order: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return PlatformOrderLookup{}, err
+	}
+	var gateway gatewayResponse
+	if err := json.Unmarshal(body, &gateway); err != nil {
+		return PlatformOrderLookup{}, fmt.Errorf("decode XLWMS platform order response: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || !gateway.Success {
+		message := strings.TrimSpace(gateway.Error)
+		if message == "" {
+			message = fmt.Sprintf("XLWMS platform order query returned HTTP %d", response.StatusCode)
+		}
+		return PlatformOrderLookup{}, errors.New(message)
+	}
+	var result PlatformOrderLookup
+	if err := json.Unmarshal(gateway.Data, &result); err != nil {
+		return PlatformOrderLookup{}, fmt.Errorf("decode XLWMS platform order data: %w", err)
+	}
+	if result.Orders == nil {
+		result.Orders = []PlatformOrder{}
+	}
+	return result, nil
 }
 
 func (c *Client) SyncFulfillmentAudits(ctx context.Context, snapshot FulfillmentAuditSnapshot) error {
