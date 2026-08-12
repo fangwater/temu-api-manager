@@ -7,6 +7,7 @@ const savedShopCode = requestedShopCode || sessionStorage.getItem("temu_selected
 const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
 state.omsPlatformOrders = [];
 state.omsPlatformOrderMeta = {};
+state.omsPlatformOrderRequestSequence = 0;
 state.omsPlatformOrderStatus = 0;
 state.pages.omsStatuses = 1;
 state.carrierPolicies = [];
@@ -1351,13 +1352,17 @@ const omsPlatformOrderStatusMeta = Object.freeze({
 
 async function loadOMSPlatformOrders() {
   const status = state.omsPlatformOrderStatus;
+  const requestSequence = ++state.omsPlatformOrderRequestSequence;
   try {
     const payload = await api(`/oms-platform-orders?status=${status}&page=${state.pages.omsStatuses}&page_size=${state.pageSize}`);
+    if (requestSequence !== state.omsPlatformOrderRequestSequence) return;
     if (adjustEmptyPage(payload.meta, "omsStatuses", loadOMSPlatformOrders)) return;
     state.omsPlatformOrders = payload.data || [];
     state.omsPlatformOrderMeta = payload.meta || {};
     renderOMSPlatformOrders();
-  } catch (error) { toast(error.message, true); }
+  } catch (error) {
+    if (requestSequence === state.omsPlatformOrderRequestSequence) toast(error.message, true);
+  }
 }
 
 function renderOMSPlatformOrders() {
