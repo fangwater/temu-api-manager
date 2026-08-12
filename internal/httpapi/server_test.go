@@ -204,3 +204,24 @@ func TestWriteManualOrdersCSVExpandsOrderLines(t *testing.T) {
 		t.Fatalf("unexpected second export row: %#v", rows[2])
 	}
 }
+
+func TestOMSPlatformOrdersRequiresSupportedStatus(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := New(nil, "", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
+
+	for _, path := range []string{
+		"/api/oms-platform-orders",
+		"/api/oms-platform-orders?status=4",
+		"/api/oms-platform-orders?status=invalid",
+	} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s returned %d, want %d", path, response.Code, http.StatusBadRequest)
+		}
+		if !strings.Contains(response.Body.String(), "status must be 0, 1, 2, or 3") {
+			t.Fatalf("%s returned unexpected body: %s", path, response.Body.String())
+		}
+	}
+}

@@ -1088,6 +1088,101 @@ func (p *Postgres) ShipmentStatusCounts(ctx context.Context) (map[string]int, er
 	return counts, rows.Err()
 }
 
+const omsPlatformOrderStatusRecords = `
+	FROM temu_oms_sync_checks d
+	JOIN temu_shipments s ON s.id=d.shipment_id
+	JOIN temu_shipment_orders so ON so.shipment_id=s.id
+	LEFT JOIN temu_auto_fulfillment_jobs j ON j.parent_order_sn=so.parent_order_sn
+	CROSS JOIN LATERAL jsonb_array_elements(
+		CASE WHEN jsonb_typeof(d.response_summary->'expected'->'orders')='array'
+		THEN d.response_summary->'expected'->'orders' ELSE '[]'::jsonb END
+	) oms_order
+	WHERE (oms_order->>'status')::integer BETWEEN 0 AND 3`
+
+func omsPlatformOrderStatusText(status int) string {
+	switch status {
+	case 0:
+		return "待处理"
+	case 1:
+		return "待获取平台面单"
+	case 2:
+		return "处理中"
+	case 3:
+		return "已发货"
+	default:
+		return ""
+	}
+}
+
+func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
+	if status < 0 || status > 3 {
+		return nil, 0, nil, errors.New("OMS platform order status must be between 0 and 3")
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 30
+	}
+
+	counts := map[int]int{0: 0, 1: 0, 2: 0, 3: 0}
+	rows, err := p.pool.Query(ctx, `
+		SELECT (oms_order->>'status')::integer,count(*)`+omsPlatformOrderStatusRecords+`
+		GROUP BY (oms_order->>'status')::integer
+		ORDER BY 1`)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	for rows.Next() {
+		var key, count int
+		if err := rows.Scan(&key, &count); err != nil {
+			rows.Close()
+			return nil, 0, nil, err
+		}
+		counts[key] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, nil, err
+	}
+	rows.Close()
+
+	total := counts[status]
+	rows, err = p.pool.Query(ctx, `
+		SELECT so.parent_order_sn,
+			coalesce(oms_order->>'oms_order_no',''),
+			coalesce(d.response_summary#>>'{expected,account}',d.response_summary#>>'{expected,configured_account}',''),
+			(oms_order->>'status')::integer,coalesce(oms_order->>'status_key',''),
+			d.warehouse_code,coalesce(oms_order->>'send_warehouse_code',''),
+			coalesce(nullif(d.tracking_number,''),s.tracking_number),
+			coalesce(oms_order->>'audit_time',''),d.status,coalesce(j.status,''),
+			coalesce(d.status='verified' AND j.status='completed',false),d.updated_at,d.verified_at`+
+		omsPlatformOrderStatusRecords+`
+		AND (oms_order->>'status')::integer=$1
+		ORDER BY d.updated_at DESC,so.parent_order_sn,coalesce(oms_order->>'oms_order_no','')
+		LIMIT $2 OFFSET $3`, status, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer rows.Close()
+	items := make([]model.OMSPlatformOrderStatus, 0, pageSize)
+	for rows.Next() {
+		var item model.OMSPlatformOrderStatus
+		if err := rows.Scan(
+			&item.PlatformOrderSN, &item.OMSOrderNo, &item.OMSAccount,
+			&item.Status, &item.StatusKey, &item.WarehouseCode,
+			&item.SendWarehouseCode, &item.TrackingNumber, &item.AuditTime,
+			&item.SyncStatus, &item.JobStatus, &item.Archived,
+			&item.QueriedAt, &item.VerifiedAt,
+		); err != nil {
+			return nil, 0, nil, err
+		}
+		item.StatusText = omsPlatformOrderStatusText(item.Status)
+		items = append(items, item)
+	}
+	return items, total, counts, rows.Err()
+}
+
 func (p *Postgres) ListShipmentPOGroups(ctx context.Context, from, before *time.Time) ([]model.ShipmentPOGroup, error) {
 	rows, err := p.pool.Query(ctx, `
 SELECT coalesce(nullif(trim(q.oms_warehouse_key),''),'UNMAPPED'),so.parent_order_sn

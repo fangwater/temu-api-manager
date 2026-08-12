@@ -79,6 +79,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("POST /api/auto-fulfillment/batches", s.startBulkFulfillment)
 	mux.HandleFunc("POST /api/auto-fulfillment/batches/restart", s.restartBulkFulfillment)
 	mux.HandleFunc("GET /api/auto-fulfillment/batches/latest", s.latestBulkFulfillment)
+	mux.HandleFunc("GET /api/oms-platform-orders", s.listOMSPlatformOrders)
 	mux.HandleFunc("GET /api/shipments", s.listShipments)
 	mux.HandleFunc("POST /api/shipments/lookup", s.lookupOrderShipments)
 	mux.HandleFunc("GET /api/shipments/export-po.zip", s.exportShipmentPOZIP)
@@ -597,6 +598,25 @@ func (s *Server) listShipments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response{Success: true, Data: items, Meta: map[string]any{"page": page, "page_size": pageSize, "total": total, "status_counts": counts}})
+}
+
+func (s *Server) listOMSPlatformOrders(w http.ResponseWriter, r *http.Request) {
+	status, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("status")))
+	if err != nil || status < 0 || status > 3 {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "status must be 0, 1, 2, or 3"})
+		return
+	}
+	page, pageSize := pagination(r)
+	ctx, cancel := s.context(r)
+	defer cancel()
+	items, total, counts, err := s.service.ListOMSPlatformOrderStatuses(ctx, status, page, pageSize)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: items, Meta: map[string]any{
+		"page": page, "page_size": pageSize, "total": total, "status": status, "status_counts": counts,
+	}})
 }
 
 func (s *Server) exportShipmentPOZIP(w http.ResponseWriter, r *http.Request) {

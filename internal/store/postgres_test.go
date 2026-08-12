@@ -116,3 +116,18 @@ func TestManualReviewWhereSupportsStatusAndSearch(t *testing.T) {
 		t.Fatalf("unexpected empty filter: where=%q args=%#v", where, args)
 	}
 }
+
+func TestOMSPlatformOrderStatusText(t *testing.T) {
+	tests := map[int]string{
+		0: "待处理",
+		1: "待获取平台面单",
+		2: "处理中",
+		3: "已发货",
+		4: "",
+	}
+	for status, want := range tests {
+		if got := omsPlatformOrderStatusText(status); got != want {
+			t.Fatalf("omsPlatformOrderStatusText(%d) = %q, want %q", status, got, want)
+		}
+	}
+}

@@ -2616,6 +2616,9 @@ func packageSNsFromStoredOrderDetail(raw json.RawMessage) ([]string, error) {
 func (s *Service) ListShipments(ctx context.Context, queue string, page, pageSize int) ([]model.Shipment, int, error) {
 	return s.store.ListShipments(ctx, queue, page, pageSize)
 }
+func (s *Service) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
+	return s.store.ListOMSPlatformOrderStatuses(ctx, status, page, pageSize)
+}
 func (s *Service) ShipmentStatusCounts(ctx context.Context) (map[string]int, error) {
 	return s.store.ShipmentStatusCounts(ctx)
 }

@@ -5,6 +5,10 @@ const defaultStore = { code: "panda-homes", name: "PANDA HOMES", default: true }
 const requestedShopCode = new URLSearchParams(window.location.search).get("shop");
 const savedShopCode = requestedShopCode || sessionStorage.getItem("temu_selected_shop") || defaultStore.code;
 const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
+state.omsPlatformOrders = [];
+state.omsPlatformOrderMeta = {};
+state.omsPlatformOrderStatus = 0;
+state.pages.omsStatuses = 1;
 state.carrierPolicies = [];
 state.skuWarehouseRules = [];
 state.skuRuleMeta = {};
@@ -1338,6 +1342,60 @@ function renderShipments() {
   renderPager("#ledger-pager", state.shipmentMeta, "ledger", () => loadShipmentQueue("ledger"));
 }
 
+const omsPlatformOrderStatusMeta = Object.freeze({
+  0: { label: "待处理", caption: "等待领星匹配并推进订单", tone: "pending" },
+  1: { label: "待获取平台面单", caption: "等待领星获取平台面单", tone: "pending" },
+  2: { label: "处理中", caption: "领星已确认，校验通过后自动归档", tone: "" },
+  3: { label: "已发货", caption: "领星已发货，校验通过后自动归档", tone: "" },
+});
+
+async function loadOMSPlatformOrders() {
+  const status = state.omsPlatformOrderStatus;
+  try {
+    const payload = await api(`/oms-platform-orders?status=${status}&page=${state.pages.omsStatuses}&page_size=${state.pageSize}`);
+    if (adjustEmptyPage(payload.meta, "omsStatuses", loadOMSPlatformOrders)) return;
+    state.omsPlatformOrders = payload.data || [];
+    state.omsPlatformOrderMeta = payload.meta || {};
+    renderOMSPlatformOrders();
+  } catch (error) { toast(error.message, true); }
+}
+
+function renderOMSPlatformOrders() {
+  const status = state.omsPlatformOrderStatus;
+  const meta = omsPlatformOrderStatusMeta[status];
+  const counts = state.omsPlatformOrderMeta.status_counts || {};
+  for (let value = 0; value <= 3; value += 1) {
+    $(`#metric-oms-status-${value}`).textContent = counts[value] || 0;
+  }
+  $("#nav-oms-status-count").textContent = (counts[0] || 0) + (counts[1] || 0);
+  $("#oms-status-heading").textContent = `状态 ${status} · ${meta.label}`;
+  $("#oms-status-caption").textContent = meta.caption;
+  $("#oms-status-total").textContent = `共 ${state.omsPlatformOrderMeta.total ?? state.omsPlatformOrders.length} 条`;
+  $$('[data-oms-status]').forEach((button) => {
+    const active = Number(button.dataset.omsStatus) === status;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  $("#oms-status-rows").innerHTML = state.omsPlatformOrders.map((order) => {
+    const warehouseMatched = order.warehouse_code && order.send_warehouse_code && order.warehouse_code.toUpperCase() === order.send_warehouse_code.toUpperCase();
+    const warehouseText = order.send_warehouse_code || "等待领星分仓";
+    const archiveLabel = order.archived ? "已归档" : order.sync_status === "manual_required" ? "需人工处理" : order.sync_status === "verified" ? "待归档" : "待领星推进";
+    const archiveTone = order.archived ? "" : order.sync_status === "manual_required" ? "failed" : "pending";
+    return `<tr>
+      <td><div class="order-id"><strong>${escapeHtml(order.platform_order_sn)}</strong><small>${escapeHtml(order.tracking_number || "暂无跟踪号")}</small></div></td>
+      <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
+      <td><span class="status-badge neutral">${escapeHtml((order.oms_account || "-").toUpperCase())}</span></td>
+      <td><span class="status-badge ${meta.tone}">${status} · ${escapeHtml(meta.label)}</span></td>
+      <td><div class="order-id"><strong>${escapeHtml(warehouseText)}</strong><small>${warehouseMatched ? "与买单仓一致" : order.send_warehouse_code ? `买单仓 ${escapeHtml(order.warehouse_code)}` : "等待仓库信息"}</small></div></td>
+      <td>${escapeHtml(order.tracking_number || "-")}</td>
+      <td><span class="status-badge ${archiveTone}">${archiveLabel}</span></td>
+      <td>${formatTime(order.queried_at)}</td>
+    </tr>`;
+  }).join("");
+  $("#oms-status-empty").hidden = state.omsPlatformOrders.length > 0;
+  renderPager("#oms-status-pager", state.omsPlatformOrderMeta, "omsStatuses", loadOMSPlatformOrders);
+}
+
 const splitCarrierMeta = Object.freeze({
   GOFO: { label: "GOFO", policy: "免费 POD", tone: "pod" },
   USPS: { label: "USPS", policy: "无需签名", tone: "standard" },
@@ -1620,13 +1678,14 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
   if (view === "combined") loadCombinedShipmentCandidates();
   if (view === "labels") loadShipmentQueue("labels");
   if (view === "exceptions") loadShipmentQueue("exceptions");
   if (view === "ledger") loadShipmentQueue("ledger");
+  if (view === "oms-statuses") loadOMSPlatformOrders();
   if (view === "shipments") loadHistory();
   if (view === "warehouses") loadWarehouses();
   if (view === "sku-warehouses") loadSKUWarehouseRules();
@@ -1669,6 +1728,12 @@ $("#manual-search").addEventListener("input", () => { state.pages.manual = 1; cl
 $("#refresh-labels").addEventListener("click", () => loadShipmentQueue("labels"));
 $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exceptions"));
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));
+$("#refresh-oms-statuses").addEventListener("click", loadOMSPlatformOrders);
+$$('[data-oms-status]').forEach((button) => button.addEventListener("click", () => {
+  state.omsPlatformOrderStatus = Number(button.dataset.omsStatus);
+  state.pages.omsStatuses = 1;
+  loadOMSPlatformOrders();
+}));
 $("#export-ledger-po").addEventListener("click", exportShipmentPO);
 $("#refresh-shipments").addEventListener("click", loadHistory);
 $("#sync-warehouses").addEventListener("click", async () => { const button = $("#sync-warehouses"); setLoading(button, true); await loadWarehouses(true); setLoading(button, false); });
@@ -1688,9 +1753,9 @@ $("#shop-select").addEventListener("change", (event) => {
 async function initialize() {
   renderTrackingStatusMappings();
   await loadShops();
-  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment()]);
+  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment(), loadOMSPlatformOrders()]);
 }
 
 void initialize();
-setInterval(() => { loadOrders(); loadShipments(); loadBulkFulfillment(); }, 5000);
+setInterval(() => { loadOrders(); loadShipments(); loadBulkFulfillment(); if ($("#view-oms-statuses").classList.contains("active")) loadOMSPlatformOrders(); }, 5000);
 setInterval(() => { loadToken(); loadManualOrders(); }, 60000);
