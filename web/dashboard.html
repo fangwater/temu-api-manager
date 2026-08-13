@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260813-3" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260813-4" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -226,7 +226,7 @@
               <span class="table-note" id="oms-status-total">共 0 条</span>
             </div>
             <div class="table-shell oms-status-table">
-              <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>领星状态</th><th>仓库校验</th><th>跟踪号</th><th>发货方式</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
+              <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>领星状态</th><th>仓库校验</th><th>跟踪号</th><th>发货方式</th><th>归档结果</th><th>最近查询</th><th>操作</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
               <div class="empty" id="oms-status-empty" hidden><svg><use href="#i-orders"/></svg><strong>当前状态没有订单</strong><span>后台核验到对应领星状态后会显示在这里</span></div>
             </div>
             <div class="pager" id="oms-status-pager" hidden></div>
@@ -315,10 +315,38 @@
       </div>
     </dialog>
 
+    <dialog class="warehouse-assignment-dialog" id="warehouse-assignment-dialog" aria-labelledby="warehouse-assignment-title">
+      <form method="dialog" class="dialog-head"><div><small>Temu 已购面单</small><h2 id="warehouse-assignment-title">分配仓库和物流</h2></div><button class="icon-button" value="cancel" title="关闭" aria-label="关闭"><svg><use href="#i-close"/></svg></button></form>
+      <div class="dialog-body">
+        <div class="assignment-loading" id="warehouse-assignment-loading"><svg><use href="#i-refresh"/></svg><strong>正在根据购面单匹配实际发货仓库</strong></div>
+        <div id="warehouse-assignment-content" hidden>
+          <div class="order-summary assignment-summary">
+            <div class="summary-block"><small>Temu 父订单</small><strong id="assignment-order-no">-</strong></div>
+            <div class="summary-block"><small>领星订单 / 账户</small><strong id="assignment-oms-order">-</strong></div>
+            <div class="summary-block"><small>跟踪号</small><strong id="assignment-tracking">-</strong></div>
+            <div class="summary-block"><small>平台面单渠道</small><strong id="assignment-channel">-</strong></div>
+          </div>
+          <section class="assignment-route" aria-label="自动匹配实际发货仓库">
+            <div class="assignment-route-head"><svg><use href="#i-check"/></svg><strong>按购面单结果匹配发货仓库</strong><span>1 / 1 单</span></div>
+            <div class="assignment-route-row">
+              <div><small>Temu 买单仓库</small><strong id="assignment-temu-warehouse">-</strong><span id="assignment-temu-warehouse-id">-</span></div>
+              <svg><use href="#i-truck"/></svg>
+              <div><small>实际发货仓库</small><strong id="assignment-oms-warehouse">-</strong><span id="assignment-oms-warehouse-code">-</span></div>
+            </div>
+          </section>
+          <fieldset class="assignment-carriers"><legend>物流商</legend><div id="assignment-carrier-options"></div></fieldset>
+          <label class="check-row assignment-confirm"><input id="assignment-confirm" type="checkbox" /><span>我确认按以上购面单仓库分配订单并立即审核</span></label>
+          <div class="assignment-error" id="warehouse-assignment-error" role="alert" hidden></div>
+          <div class="dialog-actions"><button type="button" class="secondary-button" id="assignment-cancel">取消</button><button type="button" class="primary-button" id="assignment-submit" disabled><svg><use href="#i-check"/></svg><span>确定并审核</span></button></div>
+        </div>
+        <div class="assignment-error assignment-load-error" id="warehouse-assignment-load-error" role="alert" hidden><span></span><button type="button" class="secondary-button" id="assignment-retry">重试</button></div>
+      </div>
+    </dialog>
+
     <dialog class="key-dialog" id="key-dialog">
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260813-4" defer></script>
+    <script src="./dashboard.js?v=20260813-5" defer></script>
   </body>
 </html>

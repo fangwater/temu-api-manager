@@ -21,6 +21,7 @@ import (
 
 	"temu-api-manager/internal/inventory"
 	"temu-api-manager/internal/model"
+	"temu-api-manager/internal/oms"
 	"temu-api-manager/internal/service"
 
 	"github.com/jackc/pgx/v5"
@@ -80,6 +81,8 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("POST /api/auto-fulfillment/batches/restart", s.restartBulkFulfillment)
 	mux.HandleFunc("GET /api/auto-fulfillment/batches/latest", s.latestBulkFulfillment)
 	mux.HandleFunc("GET /api/oms-platform-orders", s.listOMSPlatformOrders)
+	mux.HandleFunc("GET /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment-preview", s.previewOMSPlatformOrderWarehouseAssignment)
+	mux.HandleFunc("POST /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment", s.assignOMSPlatformOrderWarehouse)
 	mux.HandleFunc("GET /api/shipments", s.listShipments)
 	mux.HandleFunc("POST /api/shipments/lookup", s.lookupOrderShipments)
 	mux.HandleFunc("GET /api/shipments/export-po.zip", s.exportShipmentPOZIP)
@@ -620,6 +623,39 @@ func (s *Server) listOMSPlatformOrders(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+func (s *Server) previewOMSPlatformOrderWarehouseAssignment(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.PreviewWarehouseAssignment(ctx, r.PathValue("parentOrderSN"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) assignOMSPlatformOrderWarehouse(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		LogisticsCarrier string `json:"logistics_carrier"`
+		Confirm          bool   `json:"confirm"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !input.Confirm {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "confirm=true is required"})
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.AssignWarehouse(ctx, r.PathValue("parentOrderSN"), input.LogisticsCarrier)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
 func parseOMSPlatformOrderStatus(value string) (int, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "missing" {
@@ -934,6 +970,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	} else if errors.Is(err, service.ErrPackageSNNotReady) {
 		status = http.StatusConflict
+	} else if errors.Is(err, service.ErrWarehouseAssignmentUnavailable) {
+		status = http.StatusConflict
 	} else if strings.Contains(err.Error(), "already has shipment") || strings.Contains(err.Error(), "manual") || strings.Contains(err.Error(), "mapping required") {
 		status = http.StatusConflict
 	} else if strings.Contains(err.Error(), "connect to PostgreSQL") || strings.Contains(err.Error(), "invalid JSON") {
@@ -941,6 +979,13 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 	} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
 		status = http.StatusGatewayTimeout
 		err = errors.New("上游查询超时，请重试")
+	} else {
+		var gatewayErr *oms.GatewayError
+		if errors.As(err, &gatewayErr) && gatewayErr.StatusCode == http.StatusConflict {
+			status = http.StatusConflict
+		} else if errors.As(err, &gatewayErr) {
+			status = http.StatusBadGateway
+		}
 	}
 	if status >= 500 {
 		s.logger.Error("Temu API request failed", "error", err)

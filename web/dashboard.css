@@ -266,3 +266,37 @@
   .split-empty{min-height:230px}
 }
 .nav-button[hidden]{display:none}
+
+.warehouse-assignment-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:0;border:0;border-radius:8px;background:#fff;box-shadow:0 24px 70px rgba(21,26,30,.28)}
+.warehouse-assignment-dialog .dialog-body{max-height:calc(100vh - 100px)}
+.assignment-loading{min-height:220px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#687177}
+.assignment-loading[hidden]{display:none}
+.assignment-loading svg{width:28px;height:28px;animation:spin .8s linear infinite;color:#3d7965}
+.assignment-loading strong{font-size:11px}
+.assignment-summary{margin-bottom:14px}
+.assignment-route{overflow:hidden;margin-bottom:18px;border:1px solid #b9d6cb;border-radius:7px;background:#f4f9f7}
+.assignment-route-head{height:46px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid #d4e7df;color:#286b56}
+.assignment-route-head svg{width:16px;height:16px}
+.assignment-route-head strong{font-size:11px}
+.assignment-route-head span{margin-left:auto;font-size:9px}
+.assignment-route-row{display:grid;grid-template-columns:minmax(0,1fr) 32px minmax(0,1fr);align-items:center;gap:12px;padding:15px}
+.assignment-route-row>svg{justify-self:center;color:#54816f}
+.assignment-route-row>div{min-width:0;display:flex;flex-direction:column;gap:4px}
+.assignment-route-row>div:last-child{text-align:right}
+.assignment-route-row small,.assignment-route-row span{color:#7b8580;font-size:9px;overflow-wrap:anywhere}
+.assignment-route-row strong{font-size:12px;overflow-wrap:anywhere}
+.assignment-carriers{margin:0;padding:0;border:0}
+.assignment-carriers legend{margin-bottom:8px;color:#626a70;font-size:10px;font-weight:650}
+.assignment-carriers>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.assignment-carriers label{position:relative;height:40px;display:grid;place-items:center;border:1px solid #dce0e2;border-radius:6px;background:#fff;color:#626a70;font-size:10px;cursor:pointer}
+.assignment-carriers label:hover{border-color:#8fa89f}
+.assignment-carriers label.active{border-color:#3f816a;background:#f3f8f6;color:#285f4d;font-weight:650;box-shadow:inset 3px 0 #3f816a}
+.assignment-carriers input{position:absolute;opacity:0;pointer-events:none}
+.assignment-confirm{margin:16px 0 0;padding:11px 12px;border:1px solid #e0e3e5;border-radius:6px;background:#f7f8f9}
+.assignment-error{margin-top:12px;padding:10px 12px;border-left:3px solid #c9434c;background:#fff3f4;color:#9f3b43;font-size:10px;line-height:16px;overflow-wrap:anywhere}
+.assignment-load-error{min-height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-left:0;text-align:center}
+.assignment-load-error[hidden]{display:none}
+.assignment-row-action{white-space:nowrap}
+.oms-status-table table{min-width:1400px}
+.oms-status-table th:nth-child(10){width:130px}
+@media(max-width:680px){.assignment-route-row{grid-template-columns:1fr}.assignment-route-row>svg{transform:rotate(90deg)}.assignment-route-row>div:last-child{text-align:left}.assignment-carriers>div{grid-template-columns:1fr}.warehouse-assignment-dialog .dialog-actions{display:grid;grid-template-columns:1fr 1fr}.warehouse-assignment-dialog .dialog-actions button{width:100%}}

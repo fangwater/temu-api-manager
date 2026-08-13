@@ -15,6 +15,7 @@ import (
 
 type Client struct {
 	baseURL          string
+	rootURL          string
 	auditURL         string
 	platformOrderURL string
 	http             *http.Client
@@ -74,6 +75,65 @@ type PlatformOrderLookup struct {
 	QueriedAt       time.Time       `json:"queried_at"`
 }
 
+type WarehouseAssignmentRoute struct {
+	PlatformOrderNo     string `json:"platform_order_no"`
+	PlatformWarehouseID string `json:"platform_warehouse_id"`
+	PlatformWarehouse   string `json:"platform_warehouse_name"`
+	WarehouseCode       string `json:"warehouse_code"`
+	WarehouseName       string `json:"warehouse_name"`
+}
+
+type WarehouseAssignmentFailure struct {
+	PlatformOrderNo string `json:"platform_order_no"`
+	Error           string `json:"error"`
+}
+
+type WarehouseAssignmentCarrier struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type WarehouseAssignmentUnresolved struct {
+	PlatformOrderNo string `json:"platform_order_no"`
+	Reason          string `json:"reason"`
+}
+
+type WarehouseAssignmentPreview struct {
+	Ready       bool                            `json:"ready"`
+	Routes      []WarehouseAssignmentRoute      `json:"routes"`
+	Unresolved  []WarehouseAssignmentUnresolved `json:"unresolved"`
+	ChannelCode string                          `json:"channel_code"`
+	ChannelName string                          `json:"channel_name"`
+	Carriers    []WarehouseAssignmentCarrier    `json:"carriers"`
+	QueriedAt   time.Time                       `json:"queried_at"`
+}
+
+type WarehouseAssignmentResult struct {
+	Account          string                       `json:"account"`
+	Total            int                          `json:"total"`
+	Success          int                          `json:"success"`
+	Failed           int                          `json:"failed"`
+	Failures         []WarehouseAssignmentFailure `json:"failures"`
+	Routes           []WarehouseAssignmentRoute   `json:"routes"`
+	WarehouseCode    string                       `json:"warehouse_code"`
+	WarehouseCodes   []string                     `json:"warehouse_codes"`
+	ChannelCode      string                       `json:"channel_code"`
+	LogisticsCarrier string                       `json:"logistics_carrier"`
+	CompletedAt      time.Time                    `json:"completed_at"`
+}
+
+type GatewayError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *GatewayError) Error() string { return e.Message }
+
+const (
+	AutoMatchCarrier = "_AUTO_MATCH_"
+	OtherCarrier     = "other"
+)
+
 type gatewayResponse struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data"`
@@ -90,9 +150,110 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	root := strings.TrimSuffix(baseURL, "/outbound")
 	return &Client{
-		baseURL: baseURL, auditURL: root + "/fulfillment-audits/sync",
+		baseURL: baseURL, rootURL: root, auditURL: root + "/fulfillment-audits/sync",
 		platformOrderURL: root + "/temu/platform-orders", http: &http.Client{Timeout: timeout},
 	}
+}
+
+func (c *Client) PreviewWarehouseAssignment(ctx context.Context, account, platformOrderNo string) (WarehouseAssignmentPreview, error) {
+	account, platformOrderNo, err := validateWarehouseAssignmentTarget(account, platformOrderNo)
+	if err != nil {
+		return WarehouseAssignmentPreview{}, err
+	}
+	var result WarehouseAssignmentPreview
+	err = c.postGateway(ctx, "/platform-orders/routing-preview", account, map[string]any{
+		"platform_order_nos": []string{platformOrderNo},
+	}, &result)
+	if result.Routes == nil {
+		result.Routes = []WarehouseAssignmentRoute{}
+	}
+	if result.Unresolved == nil {
+		result.Unresolved = []WarehouseAssignmentUnresolved{}
+	}
+	if result.Carriers == nil {
+		result.Carriers = []WarehouseAssignmentCarrier{}
+	}
+	return result, err
+}
+
+func (c *Client) AssignWarehouse(ctx context.Context, account, platformOrderNo, logisticsCarrier string) (WarehouseAssignmentResult, error) {
+	account, platformOrderNo, err := validateWarehouseAssignmentTarget(account, platformOrderNo)
+	if err != nil {
+		return WarehouseAssignmentResult{}, err
+	}
+	logisticsCarrier = strings.TrimSpace(logisticsCarrier)
+	if logisticsCarrier != AutoMatchCarrier && logisticsCarrier != OtherCarrier {
+		return WarehouseAssignmentResult{}, errors.New("logistics carrier must be automatic matching or Other")
+	}
+	var result WarehouseAssignmentResult
+	err = c.postGateway(ctx, "/platform-orders/warehouse-assignments", account, map[string]any{
+		"platform_order_nos": []string{platformOrderNo},
+		"logistics_carrier":  logisticsCarrier,
+		"confirmation":       "CONFIRM_AND_APPROVE",
+	}, &result)
+	if result.Failures == nil {
+		result.Failures = []WarehouseAssignmentFailure{}
+	}
+	if result.Routes == nil {
+		result.Routes = []WarehouseAssignmentRoute{}
+	}
+	if result.WarehouseCodes == nil {
+		result.WarehouseCodes = []string{}
+	}
+	return result, err
+}
+
+func validateWarehouseAssignmentTarget(account, platformOrderNo string) (string, string, error) {
+	account = strings.TrimSpace(account)
+	platformOrderNo = strings.TrimSpace(platformOrderNo)
+	if account == "" {
+		return "", "", errors.New("OMS account is required")
+	}
+	if platformOrderNo == "" {
+		return "", "", errors.New("platform order number is required")
+	}
+	return account, platformOrderNo, nil
+}
+
+func (c *Client) postGateway(ctx context.Context, path, account string, payload, target any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.rootURL+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-OMS-Account", account)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return &GatewayError{StatusCode: http.StatusBadGateway, Message: "无法连接仓库分配服务"}
+	}
+	defer response.Body.Close()
+	body, err = io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return &GatewayError{StatusCode: http.StatusBadGateway, Message: "无法读取仓库分配服务响应"}
+	}
+	var gateway gatewayResponse
+	if err := json.Unmarshal(body, &gateway); err != nil {
+		return &GatewayError{StatusCode: http.StatusBadGateway, Message: "仓库分配服务返回了无效响应"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 || !gateway.Success {
+		message := strings.TrimSpace(gateway.Error)
+		if message == "" {
+			message = fmt.Sprintf("XLWMS warehouse assignment returned HTTP %d", response.StatusCode)
+		}
+		return &GatewayError{StatusCode: response.StatusCode, Message: message}
+	}
+	if target == nil || len(gateway.Data) == 0 || string(gateway.Data) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(gateway.Data, target); err != nil {
+		return &GatewayError{StatusCode: http.StatusBadGateway, Message: "仓库分配服务返回了无效数据"}
+	}
+	return nil
 }
 
 func (c *Client) QueryPlatformOrder(ctx context.Context, account, platformOrderNo string) (PlatformOrderLookup, error) {
@@ -112,27 +273,27 @@ func (c *Client) QueryPlatformOrder(ctx context.Context, account, platformOrderN
 	request.Header.Set("X-OMS-Account", account)
 	response, err := c.http.Do(request)
 	if err != nil {
-		return PlatformOrderLookup{}, fmt.Errorf("query XLWMS platform order: %w", err)
+		return PlatformOrderLookup{}, &GatewayError{StatusCode: http.StatusBadGateway, Message: "无法连接领星平台订单查询服务"}
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return PlatformOrderLookup{}, err
+		return PlatformOrderLookup{}, &GatewayError{StatusCode: http.StatusBadGateway, Message: "无法读取领星平台订单查询响应"}
 	}
 	var gateway gatewayResponse
 	if err := json.Unmarshal(body, &gateway); err != nil {
-		return PlatformOrderLookup{}, fmt.Errorf("decode XLWMS platform order response: %w", err)
+		return PlatformOrderLookup{}, &GatewayError{StatusCode: http.StatusBadGateway, Message: "领星平台订单查询服务返回了无效响应"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !gateway.Success {
 		message := strings.TrimSpace(gateway.Error)
 		if message == "" {
 			message = fmt.Sprintf("XLWMS platform order query returned HTTP %d", response.StatusCode)
 		}
-		return PlatformOrderLookup{}, errors.New(message)
+		return PlatformOrderLookup{}, &GatewayError{StatusCode: response.StatusCode, Message: message}
 	}
 	var result PlatformOrderLookup
 	if err := json.Unmarshal(gateway.Data, &result); err != nil {
-		return PlatformOrderLookup{}, fmt.Errorf("decode XLWMS platform order data: %w", err)
+		return PlatformOrderLookup{}, &GatewayError{StatusCode: http.StatusBadGateway, Message: "领星平台订单查询服务返回了无效数据"}
 	}
 	if result.Orders == nil {
 		result.Orders = []PlatformOrder{}

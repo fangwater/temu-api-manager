@@ -11,6 +11,52 @@ confirms the Temu shipment, and then waits for read-only XLWMS verification.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
+## Assign A Purchased-Label Order In XLWMS
+
+After Temu confirms a purchased label, the platform order can be pushed into
+XLWMS as status `0` (pending). The dashboard exposes this under
+**领星订单状态 -> 待处理**. Each pending row has a **分配仓库物流** action that
+opens the same automatic warehouse-routing confirmation used by the XLWMS
+console.
+
+The browser calls same-origin Temu endpoints:
+
+```text
+GET  /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment-preview
+POST /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment
+```
+
+Submit body:
+
+```json
+{
+  "logistics_carrier": "_AUTO_MATCH_",
+  "confirm": true
+}
+```
+
+`logistics_carrier` can be `_AUTO_MATCH_` or `other`. The Temu service resolves
+the OMS account and warehouse from the selected shop's immutable purchased-label
+ledger, then calls the XLWMS routing preview and warehouse-assignment APIs. The
+browser cannot provide `account` or `warehouse_code`; strict JSON decoding
+rejects both fields.
+
+Before preview and again immediately before submission, the server requires:
+
+1. The selected Temu shop has one confirmed shipment for the parent order.
+2. The shipment has a tracking number and at least one package number.
+3. The warehouse mapping still matches the Temu warehouse used to buy the
+   label.
+4. The configured OMS account returns exactly one same-number platform order
+   in status `0`.
+5. XLWMS independently resolves the same warehouse from authoritative Temu
+   purchased-label evidence and has the upload-label channel enabled.
+
+Submission assigns the purchased-label warehouse, selects the upload-label
+channel, and immediately approves the XLWMS platform order. XLWMS performs a
+final live pending-state check, so a repeated or racing submission is rejected
+instead of approving the order twice.
+
 ## Shop SKU Warehouse Rules
 
 SKU warehouse restrictions belong to a Temu shop, not to a warehouse. The

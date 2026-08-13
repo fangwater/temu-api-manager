@@ -10,6 +10,10 @@ state.omsPlatformOrderMeta = {};
 state.omsPlatformOrderRequestSequence = 0;
 state.omsPlatformOrderStatus = 0;
 state.pages.omsStatuses = 1;
+state.warehouseAssignment = null;
+state.warehouseAssignmentCarrier = "_AUTO_MATCH_";
+state.warehouseAssignmentRequestSequence = 0;
+state.warehouseAssignmentSubmitting = false;
 state.carrierPolicies = [];
 state.skuWarehouseRules = [];
 state.skuRuleMeta = {};
@@ -1404,6 +1408,7 @@ function renderOMSPlatformOrders() {
     const fulfillmentDetail = order.automatic_fulfillment
       ? labelReadyDuration === null ? "面单成功时间未记录" : `面单处理成功至今 ${labelReadyDuration}`
       : "";
+    const assignmentAction = status === 0 ? `<button class="row-action assignment-row-action" type="button" data-assign-order="${escapeHtml(order.platform_order_sn)}">分配仓库物流</button>` : "-";
     return `<tr>
       <td><div class="order-id"><strong>${escapeHtml(order.platform_order_sn)}</strong><small>${escapeHtml(order.tracking_number || "暂无跟踪号")}</small></div></td>
       <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${missing ? "未检索到同号平台订单" : escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
@@ -1414,10 +1419,107 @@ function renderOMSPlatformOrders() {
       <td><div class="order-id"><span class="status-badge ${order.automatic_fulfillment ? "" : "neutral"}">${fulfillmentLabel}</span>${fulfillmentDetail ? `<small>${fulfillmentDetail}</small>` : ""}</div></td>
       <td><span class="status-badge ${archiveTone}">${archiveLabel}</span></td>
       <td>${formatTime(order.queried_at)}</td>
+      <td>${assignmentAction}</td>
     </tr>`;
   }).join("");
   $("#oms-status-empty").hidden = state.omsPlatformOrders.length > 0;
   renderPager("#oms-status-pager", state.omsPlatformOrderMeta, "omsStatuses", loadOMSPlatformOrders);
+}
+
+function setWarehouseAssignmentLoading(loading) {
+  $("#warehouse-assignment-loading").hidden = !loading;
+  $("#warehouse-assignment-content").hidden = loading;
+  const button = $("#assignment-submit");
+  button.disabled = loading || state.warehouseAssignmentSubmitting || !state.warehouseAssignment || !$("#assignment-confirm").checked;
+}
+
+function updateWarehouseAssignmentSubmit() {
+  $("#assignment-submit").disabled = state.warehouseAssignmentSubmitting || !state.warehouseAssignment?.ready || !$("#assignment-confirm").checked || !state.warehouseAssignmentCarrier;
+}
+
+function renderWarehouseAssignment(preview) {
+  const route = preview.routes?.[0] || {};
+  $("#assignment-order-no").textContent = preview.parent_order_sn || "-";
+  $("#assignment-oms-order").textContent = `${preview.oms_order_no || "-"} · ${(preview.oms_account || "-").toUpperCase()}`;
+  $("#assignment-tracking").textContent = preview.tracking_number || "-";
+  $("#assignment-channel").textContent = `${preview.channel_name || "上传物流面单"} · ${preview.channel_code || "-"}`;
+  $("#assignment-temu-warehouse").textContent = preview.temu_warehouse_name || route.platform_warehouse_name || preview.warehouse_key || "-";
+  $("#assignment-temu-warehouse-id").textContent = preview.temu_warehouse_id || route.platform_warehouse_id || "-";
+  $("#assignment-oms-warehouse").textContent = route.warehouse_name || preview.warehouse_code || "-";
+  $("#assignment-oms-warehouse-code").textContent = route.warehouse_code || preview.warehouse_code || "-";
+  const carriers = preview.carriers || [];
+  if (!carriers.some((carrier) => carrier.value === state.warehouseAssignmentCarrier)) {
+    state.warehouseAssignmentCarrier = carriers.find((carrier) => carrier.value === "_AUTO_MATCH_")?.value || carriers[0]?.value || "";
+  }
+  $("#assignment-carrier-options").innerHTML = carriers.map((carrier) => `<label class="${carrier.value === state.warehouseAssignmentCarrier ? "active" : ""}"><input type="radio" name="assignment-carrier" value="${escapeHtml(carrier.value)}" ${carrier.value === state.warehouseAssignmentCarrier ? "checked" : ""} /><span>${escapeHtml(carrier.label)}</span></label>`).join("");
+  $("#assignment-confirm").checked = false;
+  $("#warehouse-assignment-error").hidden = true;
+  setWarehouseAssignmentLoading(false);
+  updateWarehouseAssignmentSubmit();
+}
+
+async function loadWarehouseAssignmentPreview() {
+  const parentOrderSN = state.warehouseAssignment?.parentOrderSN;
+  if (!parentOrderSN) return;
+  const requestSequence = ++state.warehouseAssignmentRequestSequence;
+  $("#warehouse-assignment-load-error").hidden = true;
+  setWarehouseAssignmentLoading(true);
+  try {
+    const { data } = await api(`/oms-platform-orders/${encodeURIComponent(parentOrderSN)}/warehouse-assignment-preview`);
+    if (requestSequence !== state.warehouseAssignmentRequestSequence) return;
+    state.warehouseAssignment = data;
+    state.warehouseAssignmentCarrier = "_AUTO_MATCH_";
+    renderWarehouseAssignment(data);
+  } catch (error) {
+    if (requestSequence !== state.warehouseAssignmentRequestSequence) return;
+    $("#warehouse-assignment-loading").hidden = true;
+    $("#warehouse-assignment-content").hidden = true;
+    const panel = $("#warehouse-assignment-load-error");
+    panel.querySelector("span").textContent = error.message;
+    panel.hidden = false;
+  }
+}
+
+function openWarehouseAssignment(parentOrderSN) {
+  state.warehouseAssignment = { parentOrderSN };
+  state.warehouseAssignmentCarrier = "_AUTO_MATCH_";
+  state.warehouseAssignmentSubmitting = false;
+  $("#warehouse-assignment-dialog").showModal();
+  void loadWarehouseAssignmentPreview();
+}
+
+async function submitWarehouseAssignment() {
+  const preview = state.warehouseAssignment;
+  if (!preview?.ready || !$("#assignment-confirm").checked || !state.warehouseAssignmentCarrier) return;
+  state.warehouseAssignmentSubmitting = true;
+  const button = $("#assignment-submit");
+  const closeButton = $("#warehouse-assignment-dialog .dialog-head button");
+  setLoading(button, true);
+  button.querySelector("span").textContent = "正在审核";
+  closeButton.disabled = true;
+  $("#assignment-cancel").disabled = true;
+  $("#warehouse-assignment-error").hidden = true;
+  try {
+    await api(`/oms-platform-orders/${encodeURIComponent(preview.parent_order_sn)}/warehouse-assignment`, {
+      method: "POST",
+      timeoutMs: 60000,
+      body: JSON.stringify({ logistics_carrier: state.warehouseAssignmentCarrier, confirm: true }),
+    });
+    $("#warehouse-assignment-dialog").close();
+    toast(`订单 ${preview.parent_order_sn} 已完成仓库分配并审核`);
+    await loadOMSPlatformOrders();
+  } catch (error) {
+    const panel = $("#warehouse-assignment-error");
+    panel.textContent = error.message;
+    panel.hidden = false;
+  } finally {
+    state.warehouseAssignmentSubmitting = false;
+    setLoading(button, false);
+    button.querySelector("span").textContent = "确定并审核";
+    closeButton.disabled = false;
+    $("#assignment-cancel").disabled = false;
+    updateWarehouseAssignmentSubmit();
+  }
 }
 
 const splitCarrierMeta = Object.freeze({
@@ -1753,6 +1855,26 @@ $("#refresh-labels").addEventListener("click", () => loadShipmentQueue("labels")
 $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exceptions"));
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));
 $("#refresh-oms-statuses").addEventListener("click", loadOMSPlatformOrders);
+$("#oms-status-rows").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-assign-order]");
+  if (button) openWarehouseAssignment(button.dataset.assignOrder);
+});
+$("#assignment-carrier-options").addEventListener("change", (event) => {
+  if (event.target.name !== "assignment-carrier") return;
+  state.warehouseAssignmentCarrier = event.target.value;
+  $$("#assignment-carrier-options label").forEach((label) => label.classList.toggle("active", label.contains(event.target)));
+  updateWarehouseAssignmentSubmit();
+});
+$("#assignment-confirm").addEventListener("change", updateWarehouseAssignmentSubmit);
+$("#assignment-cancel").addEventListener("click", () => $("#warehouse-assignment-dialog").close());
+$("#assignment-retry").addEventListener("click", loadWarehouseAssignmentPreview);
+$("#assignment-submit").addEventListener("click", submitWarehouseAssignment);
+$("#warehouse-assignment-dialog").addEventListener("close", () => {
+  state.warehouseAssignmentRequestSequence += 1;
+  state.warehouseAssignment = null;
+  $("#warehouse-assignment-load-error").hidden = true;
+  $("#warehouse-assignment-error").hidden = true;
+});
 $$('[data-oms-status]').forEach((button) => button.addEventListener("click", () => {
   state.omsPlatformOrderStatus = button.dataset.omsStatus === "missing" ? "missing" : Number(button.dataset.omsStatus);
   state.pages.omsStatuses = 1;

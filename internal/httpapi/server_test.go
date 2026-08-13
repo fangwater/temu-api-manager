@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"temu-api-manager/internal/model"
+	"temu-api-manager/internal/oms"
 	"temu-api-manager/internal/service"
 	"temu-api-manager/internal/temu"
 )
@@ -234,5 +235,54 @@ func TestParseOMSPlatformOrderStatus(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("parseOMSPlatformOrderStatus(%q) = %d, %v; want %d", value, got, err, want)
 		}
+	}
+}
+
+func TestWarehouseAssignmentSubmitRequiresConfirmationAndRejectsClientSelectors(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := New(nil, "", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "confirmation required", body: `{"logistics_carrier":"_AUTO_MATCH_","confirm":false}`, want: "confirm=true is required"},
+		{name: "account rejected", body: `{"logistics_carrier":"_AUTO_MATCH_","confirm":true,"account":"dps"}`, want: "unknown field"},
+		{name: "warehouse rejected", body: `{"logistics_carrier":"_AUTO_MATCH_","confirm":true,"warehouse_code":"DPSNY002"}`, want: "unknown field"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/oms-platform-orders/PO-1/warehouse-assignment", strings.NewReader(test.body))
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), test.want) {
+				t.Fatalf("unexpected response %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestWarehouseAssignmentErrorsMapToConflictOrBadGateway(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := &Server{logger: logger}
+
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "local eligibility", err: service.ErrWarehouseAssignmentUnavailable, want: http.StatusConflict},
+		{name: "upstream conflict", err: &oms.GatewayError{StatusCode: http.StatusConflict, Message: "订单状态已变化"}, want: http.StatusConflict},
+		{name: "upstream failure", err: &oms.GatewayError{StatusCode: http.StatusServiceUnavailable, Message: "领星不可用"}, want: http.StatusBadGateway},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.fail(response, test.err)
+			if response.Code != test.want {
+				t.Fatalf("got status %d, want %d: %s", response.Code, test.want, response.Body.String())
+			}
+		})
 	}
 }
