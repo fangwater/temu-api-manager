@@ -1040,15 +1040,9 @@ func (p *Postgres) ListShipments(ctx context.Context, queue string, page, pageSi
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 30
 	}
-	where := ""
-	switch strings.ToLower(strings.TrimSpace(queue)) {
-	case "", "all":
-	case "processing":
-		where = ` WHERE s.status IN ('submitting','label_pending','label_ready')`
-	case "exceptions":
-		where = ` WHERE s.status IN ('submission_unknown','label_failed','confirm_failed')`
-	default:
-		return nil, 0, errors.New("invalid shipment queue")
+	where, err := shipmentQueueWhere(queue)
+	if err != nil {
+		return nil, 0, err
 	}
 	var total int
 	if err := p.pool.QueryRow(ctx, `SELECT count(*) FROM temu_shipments s`+where).Scan(&total); err != nil {
@@ -1070,8 +1064,27 @@ func (p *Postgres) ListShipments(ctx context.Context, queue string, page, pageSi
 	return items, total, rows.Err()
 }
 
-func (p *Postgres) ShipmentStatusCounts(ctx context.Context) (map[string]int, error) {
-	rows, err := p.pool.Query(ctx, `SELECT status,count(*) FROM temu_shipments GROUP BY status`)
+func shipmentQueueWhere(queue string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(queue)) {
+	case "", "all":
+		return "", nil
+	case "ledger":
+		return ` WHERE s.status <> 'shipped'`, nil
+	case "processing":
+		return ` WHERE s.status IN ('submitting','label_pending','label_ready')`, nil
+	case "exceptions":
+		return ` WHERE s.status IN ('submission_unknown','label_failed','confirm_failed')`, nil
+	default:
+		return "", errors.New("invalid shipment queue")
+	}
+}
+
+func (p *Postgres) ShipmentStatusCounts(ctx context.Context, queue string) (map[string]int, error) {
+	where, err := shipmentQueueWhere(queue)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := p.pool.Query(ctx, `SELECT status,count(*) FROM temu_shipments s`+where+` GROUP BY status`)
 	if err != nil {
 		return nil, err
 	}

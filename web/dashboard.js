@@ -1210,7 +1210,7 @@ async function loadShipments() {
 }
 
 async function loadShipmentQueue(key) {
-  const queue = key === "labels" ? "processing" : key === "exceptions" ? "exceptions" : "all";
+  const queue = key === "labels" ? "processing" : key === "exceptions" ? "exceptions" : "ledger";
   try {
     const payload = await api(`/shipments?page=${state.pages[key]}&page_size=${state.pageSize}&queue=${queue}`);
     if (adjustEmptyPage(payload.meta, key, () => loadShipmentQueue(key))) return;
@@ -1338,8 +1338,6 @@ function renderShipments() {
   $("#metric-ledger-total").textContent = state.shipmentMeta.total ?? items.length;
   $("#metric-ledger-processing").textContent = (counts.submitting || 0) + (counts.label_pending || 0) + (counts.label_ready || 0);
   $("#metric-ledger-exceptions").textContent = (counts.submission_unknown || 0) + (counts.label_failed || 0) + (counts.confirm_failed || 0);
-  $("#metric-ledger-shipped").textContent = counts.shipped || 0;
-  $("#nav-ledger-count").textContent = state.shipmentMeta.total ?? items.length;
   renderPager("#ledger-pager", state.shipmentMeta, "ledger", () => loadShipmentQueue("ledger"));
 }
 

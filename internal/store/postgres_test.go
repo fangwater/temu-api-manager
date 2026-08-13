@@ -131,3 +131,20 @@ func TestOMSPlatformOrderStatusText(t *testing.T) {
 		}
 	}
 }
+
+func TestShipmentQueueWhereExcludesShippedFromLedger(t *testing.T) {
+	where, err := shipmentQueueWhere("ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(where, "s.status <> 'shipped'") {
+		t.Fatalf("ledger filter does not exclude shipped records: %q", where)
+	}
+	all, err := shipmentQueueWhere("all")
+	if err != nil || all != "" {
+		t.Fatalf("all shipment filter = %q, %v; want no filter", all, err)
+	}
+	if _, err := shipmentQueueWhere("unknown"); err == nil {
+		t.Fatal("unsupported shipment queue was accepted")
+	}
+}

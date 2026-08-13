@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260812-2" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260813-1" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -36,8 +36,8 @@
           <button class="nav-button" data-view="labels"><svg><use href="#i-download"/></svg><span>自动处理中</span><b id="nav-label-count">0</b></button>
           <button class="nav-button" data-view="exceptions"><svg><use href="#i-alert"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
           <button class="nav-button" data-view="manual"><svg><use href="#i-alert"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
-          <button class="nav-button" data-view="ledger"><svg><use href="#i-truck"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
           <button class="nav-button" data-view="oms-statuses"><svg><use href="#i-orders"/></svg><span>领星订单状态</span><b id="nav-oms-status-count">0</b></button>
+          <button class="nav-button" data-view="ledger"><svg><use href="#i-truck"/></svg><span>自动发货账本</span></button>
           <button class="nav-button" data-view="shipments"><svg><use href="#i-truck"/></svg><span>发货记录</span></button>
           <button class="nav-button" data-view="warehouses"><svg><use href="#i-warehouse"/></svg><span>仓库映射</span></button>
           <button class="nav-button" data-view="sku-warehouses"><svg><use href="#i-warehouse"/></svg><span>SKU 发货仓库</span></button>
@@ -199,12 +199,11 @@
           </section>
 
           <section class="view" id="view-ledger">
-            <div class="page-head"><div><h1>自动发货账本</h1><p>只读记录自动选仓、购单、Temu 确认与领星同步状态，可按仓库和发货时间导出 PO 单号</p></div><div class="page-actions export-actions"><label><small>开始时间</small><input id="export-po-from" type="datetime-local" step="60" /></label><label><small>结束时间</small><input id="export-po-to" type="datetime-local" step="60" /></label><button class="secondary-button" id="export-ledger-po"><svg><use href="#i-download"/></svg>按仓库导出 PO</button><button class="icon-button" id="refresh-ledger" title="刷新账本" aria-label="刷新账本"><svg><use href="#i-refresh"/></svg></button></div></div>
-            <div class="status-band">
+            <div class="page-head"><div><h1>自动发货账本</h1><p>只读记录尚未发货订单的自动选仓、购单与 Temu 确认状态，可按仓库和发货时间导出 PO 单号</p></div><div class="page-actions export-actions"><label><small>开始时间</small><input id="export-po-from" type="datetime-local" step="60" /></label><label><small>结束时间</small><input id="export-po-to" type="datetime-local" step="60" /></label><button class="secondary-button" id="export-ledger-po"><svg><use href="#i-download"/></svg>按仓库导出 PO</button><button class="icon-button" id="refresh-ledger" title="刷新账本" aria-label="刷新账本"><svg><use href="#i-refresh"/></svg></button></div></div>
+            <div class="status-band ledger-metrics">
               <div><small>全部账本</small><strong id="metric-ledger-total">0</strong></div>
               <div><small>处理中</small><strong id="metric-ledger-processing">0</strong></div>
               <div><small>自动发货异常</small><strong id="metric-ledger-exceptions">0</strong></div>
-              <div><small>已确认发货</small><strong id="metric-ledger-shipped">0</strong></div>
             </div>
             <div class="table-shell">
               <table><thead><tr><th>订单</th><th>快递商</th><th>包裹 / 跟踪号</th><th>状态</th><th>领星同步</th><th>创建时间</th></tr></thead><tbody id="shipment-rows"></tbody></table>
@@ -319,6 +318,6 @@
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260812-2" defer></script>
+    <script src="./dashboard.js?v=20260813-1" defer></script>
   </body>
 </html>

@@ -585,14 +585,15 @@ func (s *Server) purchase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listShipments(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := pagination(r)
+	queue := r.URL.Query().Get("queue")
 	ctx, cancel := s.context(r)
 	defer cancel()
-	items, total, err := s.service.ListShipments(ctx, r.URL.Query().Get("queue"), page, pageSize)
+	items, total, err := s.service.ListShipments(ctx, queue, page, pageSize)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	counts, err := s.service.ShipmentStatusCounts(ctx)
+	counts, err := s.service.ShipmentStatusCounts(ctx, queue)
 	if err != nil {
 		s.fail(w, err)
 		return

@@ -2619,8 +2619,8 @@ func (s *Service) ListShipments(ctx context.Context, queue string, page, pageSiz
 func (s *Service) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
 	return s.store.ListOMSPlatformOrderStatuses(ctx, status, page, pageSize)
 }
-func (s *Service) ShipmentStatusCounts(ctx context.Context) (map[string]int, error) {
-	return s.store.ShipmentStatusCounts(ctx)
+func (s *Service) ShipmentStatusCounts(ctx context.Context, queue string) (map[string]int, error) {
+	return s.store.ShipmentStatusCounts(ctx, queue)
 }
 func (s *Service) ListShipmentPOGroups(ctx context.Context, from, before *time.Time) ([]model.ShipmentPOGroup, error) {
 	return s.store.ListShipmentPOGroups(ctx, from, before)
