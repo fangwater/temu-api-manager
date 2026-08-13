@@ -1106,14 +1106,48 @@ const omsPlatformOrderStatusRecords = `
 	JOIN temu_shipments s ON s.id=d.shipment_id
 	JOIN temu_shipment_orders so ON so.shipment_id=s.id
 	LEFT JOIN temu_auto_fulfillment_jobs j ON j.parent_order_sn=so.parent_order_sn
+	LEFT JOIN LATERAL (
+		SELECT min(e.created_at) AS label_ready_at
+		FROM temu_shipment_events e
+		WHERE e.shipment_id=s.id AND e.event_type='label_ready'
+	) label_event ON true
 	CROSS JOIN LATERAL jsonb_array_elements(
 		CASE WHEN jsonb_typeof(d.response_summary->'expected'->'orders')='array'
 		THEN d.response_summary->'expected'->'orders' ELSE '[]'::jsonb END
 	) oms_order
 	WHERE (oms_order->>'status')::integer BETWEEN 0 AND 3`
 
+const omsAutomaticFulfillmentSQL = `coalesce(
+	j.shipment_id=s.id AND j.started_at IS NOT NULL AND j.started_at <= s.created_at,
+	false
+)`
+
+const (
+	omsPlatformOrderMissingStatus  = -1
+	omsPlatformOrderMissingRecords = `
+	FROM temu_oms_sync_checks d
+	JOIN temu_shipments s ON s.id=d.shipment_id
+	JOIN temu_shipment_orders so ON so.shipment_id=s.id
+	LEFT JOIN temu_auto_fulfillment_jobs j ON j.parent_order_sn=so.parent_order_sn
+	LEFT JOIN LATERAL (
+		SELECT min(e.created_at) AS label_ready_at
+		FROM temu_shipment_events e
+		WHERE e.shipment_id=s.id AND e.event_type='label_ready'
+	) label_event ON true
+	WHERE s.status='shipped'
+	  AND s.confirmed_at IS NOT NULL
+	  AND d.status IN ('waiting_sync','manual_required')
+	  AND d.response_summary->>'source'='oms_platform_order'
+	  AND jsonb_typeof(d.response_summary->'expected'->'orders')='array'
+	  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0
+	  AND jsonb_typeof(d.response_summary->'opposite'->'orders')='array'
+	  AND jsonb_array_length(d.response_summary->'opposite'->'orders')=0`
+)
+
 func omsPlatformOrderStatusText(status int) string {
 	switch status {
+	case omsPlatformOrderMissingStatus:
+		return "领星无匹配订单"
 	case 0:
 		return "待处理"
 	case 1:
@@ -1128,8 +1162,8 @@ func omsPlatformOrderStatusText(status int) string {
 }
 
 func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
-	if status < 0 || status > 3 {
-		return nil, 0, nil, errors.New("OMS platform order status must be between 0 and 3")
+	if status != omsPlatformOrderMissingStatus && (status < 0 || status > 3) {
+		return nil, 0, nil, errors.New("OMS platform order status must be missing or between 0 and 3")
 	}
 	if page < 1 {
 		page = 1
@@ -1138,7 +1172,7 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 		pageSize = 30
 	}
 
-	counts := map[int]int{0: 0, 1: 0, 2: 0, 3: 0}
+	counts := map[int]int{omsPlatformOrderMissingStatus: 0, 0: 0, 1: 0, 2: 0, 3: 0}
 	rows, err := p.pool.Query(ctx, `
 		SELECT (oms_order->>'status')::integer,count(*)`+omsPlatformOrderStatusRecords+`
 		GROUP BY (oms_order->>'status')::integer
@@ -1159,9 +1193,27 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 		return nil, 0, nil, err
 	}
 	rows.Close()
+	var missingCount int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*)`+omsPlatformOrderMissingRecords).Scan(&missingCount); err != nil {
+		return nil, 0, nil, err
+	}
+	counts[omsPlatformOrderMissingStatus] = missingCount
 
 	total := counts[status]
-	rows, err = p.pool.Query(ctx, `
+	if status == omsPlatformOrderMissingStatus {
+		rows, err = p.pool.Query(ctx, `
+		SELECT so.parent_order_sn,'',
+			coalesce(d.response_summary#>>'{expected,account}',d.response_summary#>>'{expected,configured_account}',''),
+			-1,'missing',d.warehouse_code,'',
+			coalesce(nullif(d.tracking_number,''),s.tracking_number),'',
+			d.status,coalesce(j.status,''),
+			`+omsAutomaticFulfillmentSQL+`,
+			label_event.label_ready_at,false,d.updated_at,d.verified_at`+
+			omsPlatformOrderMissingRecords+`
+		ORDER BY d.updated_at DESC,so.parent_order_sn
+		LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	} else {
+		rows, err = p.pool.Query(ctx, `
 		SELECT so.parent_order_sn,
 			coalesce(oms_order->>'oms_order_no',''),
 			coalesce(d.response_summary#>>'{expected,account}',d.response_summary#>>'{expected,configured_account}',''),
@@ -1169,11 +1221,14 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 			d.warehouse_code,coalesce(oms_order->>'send_warehouse_code',''),
 			coalesce(nullif(d.tracking_number,''),s.tracking_number),
 			coalesce(oms_order->>'audit_time',''),d.status,coalesce(j.status,''),
+			`+omsAutomaticFulfillmentSQL+`,
+			label_event.label_ready_at,
 			coalesce(d.status='verified' AND j.status='completed',false),d.updated_at,d.verified_at`+
-		omsPlatformOrderStatusRecords+`
+			omsPlatformOrderStatusRecords+`
 		AND (oms_order->>'status')::integer=$1
 		ORDER BY d.updated_at DESC,so.parent_order_sn,coalesce(oms_order->>'oms_order_no','')
 		LIMIT $2 OFFSET $3`, status, pageSize, (page-1)*pageSize)
+	}
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -1185,7 +1240,8 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 			&item.PlatformOrderSN, &item.OMSOrderNo, &item.OMSAccount,
 			&item.Status, &item.StatusKey, &item.WarehouseCode,
 			&item.SendWarehouseCode, &item.TrackingNumber, &item.AuditTime,
-			&item.SyncStatus, &item.JobStatus, &item.Archived,
+			&item.SyncStatus, &item.JobStatus, &item.AutomaticFulfillment,
+			&item.LabelReadyAt, &item.Archived,
 			&item.QueriedAt, &item.VerifiedAt,
 		); err != nil {
 			return nil, 0, nil, err

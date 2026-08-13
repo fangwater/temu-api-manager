@@ -145,6 +145,17 @@ function formatTime(value) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
 }
 
+function elapsedDuration(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) return null;
+  const totalMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (totalMinutes < 60) return `${totalMinutes} 分钟`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分钟`;
+}
+
 function relativeDeadline(value) {
   if (!value) return "未返回";
   const seconds = value - Math.floor(Date.now() / 1000);
@@ -1346,6 +1357,7 @@ const omsPlatformOrderStatusMeta = Object.freeze({
   1: { label: "待获取平台面单", caption: "等待领星获取平台面单", tone: "pending" },
   2: { label: "处理中", caption: "领星已确认，校验通过后自动归档", tone: "" },
   3: { label: "已发货", caption: "领星已发货，校验通过后自动归档", tone: "" },
+  missing: { label: "领星无匹配订单", caption: "Temu 已确认发货，但领星两个账户均未检索到同号平台订单", tone: "failed", countKey: -1 },
 });
 
 async function loadOMSPlatformOrders() {
@@ -1367,30 +1379,39 @@ function renderOMSPlatformOrders() {
   const status = state.omsPlatformOrderStatus;
   const meta = omsPlatformOrderStatusMeta[status];
   const counts = state.omsPlatformOrderMeta.status_counts || {};
-  for (let value = 0; value <= 3; value += 1) {
-    $(`#metric-oms-status-${value}`).textContent = counts[value] || 0;
+  for (const value of [0, 1, 2, 3, "missing"]) {
+    const countKey = omsPlatformOrderStatusMeta[value].countKey ?? value;
+    $(`#metric-oms-status-${value}`).textContent = counts[countKey] || 0;
   }
-  $("#nav-oms-status-count").textContent = (counts[0] || 0) + (counts[1] || 0);
-  $("#oms-status-heading").textContent = `状态 ${status} · ${meta.label}`;
+  $("#nav-oms-status-count").textContent = (counts[0] || 0) + (counts[1] || 0) + (counts[-1] || 0);
+  const statusPrefix = status === "missing" ? "Temu 已发货" : `状态 ${status}`;
+  $("#oms-status-heading").textContent = `${statusPrefix} · ${meta.label}`;
   $("#oms-status-caption").textContent = meta.caption;
   $("#oms-status-total").textContent = `共 ${state.omsPlatformOrderMeta.total ?? state.omsPlatformOrders.length} 条`;
   $$('[data-oms-status]').forEach((button) => {
-    const active = Number(button.dataset.omsStatus) === status;
+    const active = button.dataset.omsStatus === String(status);
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", String(active));
   });
   $("#oms-status-rows").innerHTML = state.omsPlatformOrders.map((order) => {
+    const missing = status === "missing";
     const warehouseMatched = order.warehouse_code && order.send_warehouse_code && order.warehouse_code.toUpperCase() === order.send_warehouse_code.toUpperCase();
-    const warehouseText = order.send_warehouse_code || "等待领星分仓";
-    const archiveLabel = order.archived ? "已归档" : order.sync_status === "manual_required" ? "需人工处理" : order.sync_status === "verified" ? "待归档" : "待领星推进";
+    const warehouseText = missing ? order.warehouse_code || "买单仓未知" : order.send_warehouse_code || "等待领星分仓";
+    const archiveLabel = order.archived ? "已归档" : order.sync_status === "manual_required" ? missing ? "需人工补件" : "需人工处理" : order.sync_status === "verified" ? "待归档" : missing ? "等待领星同步" : "待领星推进";
     const archiveTone = order.archived ? "" : order.sync_status === "manual_required" ? "failed" : "pending";
+    const labelReadyDuration = elapsedDuration(order.label_ready_at);
+    const fulfillmentLabel = order.automatic_fulfillment ? "系统自动发货" : "非自动发货";
+    const fulfillmentDetail = order.automatic_fulfillment
+      ? labelReadyDuration === null ? "面单成功时间未记录" : `面单处理成功至今 ${labelReadyDuration}`
+      : "";
     return `<tr>
       <td><div class="order-id"><strong>${escapeHtml(order.platform_order_sn)}</strong><small>${escapeHtml(order.tracking_number || "暂无跟踪号")}</small></div></td>
-      <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
+      <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${missing ? "未检索到同号平台订单" : escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
       <td><span class="status-badge neutral">${escapeHtml((order.oms_account || "-").toUpperCase())}</span></td>
-      <td><span class="status-badge ${meta.tone}">${status} · ${escapeHtml(meta.label)}</span></td>
-      <td><div class="order-id"><strong>${escapeHtml(warehouseText)}</strong><small>${warehouseMatched ? "与买单仓一致" : order.send_warehouse_code ? `买单仓 ${escapeHtml(order.warehouse_code)}` : "等待仓库信息"}</small></div></td>
+      <td><span class="status-badge ${meta.tone}">${escapeHtml(statusPrefix)} · ${escapeHtml(meta.label)}</span></td>
+      <td><div class="order-id"><strong>${escapeHtml(warehouseText)}</strong><small>${missing ? "领星无发货仓信息" : warehouseMatched ? "与买单仓一致" : order.send_warehouse_code ? `买单仓 ${escapeHtml(order.warehouse_code)}` : "等待仓库信息"}</small></div></td>
       <td>${escapeHtml(order.tracking_number || "-")}</td>
+      <td><div class="order-id"><span class="status-badge ${order.automatic_fulfillment ? "" : "neutral"}">${fulfillmentLabel}</span>${fulfillmentDetail ? `<small>${fulfillmentDetail}</small>` : ""}</div></td>
       <td><span class="status-badge ${archiveTone}">${archiveLabel}</span></td>
       <td>${formatTime(order.queried_at)}</td>
     </tr>`;
@@ -1733,7 +1754,7 @@ $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exce
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));
 $("#refresh-oms-statuses").addEventListener("click", loadOMSPlatformOrders);
 $$('[data-oms-status]').forEach((button) => button.addEventListener("click", () => {
-  state.omsPlatformOrderStatus = Number(button.dataset.omsStatus);
+  state.omsPlatformOrderStatus = button.dataset.omsStatus === "missing" ? "missing" : Number(button.dataset.omsStatus);
   state.pages.omsStatuses = 1;
   loadOMSPlatformOrders();
 }));

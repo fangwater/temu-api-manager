@@ -212,6 +212,7 @@ func TestOMSPlatformOrdersRequiresSupportedStatus(t *testing.T) {
 	for _, path := range []string{
 		"/api/oms-platform-orders",
 		"/api/oms-platform-orders?status=4",
+		"/api/oms-platform-orders?status=-1",
 		"/api/oms-platform-orders?status=invalid",
 	} {
 		response := httptest.NewRecorder()
@@ -220,8 +221,18 @@ func TestOMSPlatformOrdersRequiresSupportedStatus(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s returned %d, want %d", path, response.Code, http.StatusBadRequest)
 		}
-		if !strings.Contains(response.Body.String(), "status must be 0, 1, 2, or 3") {
+		if !strings.Contains(response.Body.String(), "status must be missing, 0, 1, 2, or 3") {
 			t.Fatalf("%s returned unexpected body: %s", path, response.Body.String())
+		}
+	}
+}
+
+func TestParseOMSPlatformOrderStatus(t *testing.T) {
+	tests := map[string]int{"missing": -1, " MISSING ": -1, "0": 0, "3": 3}
+	for value, want := range tests {
+		got, err := parseOMSPlatformOrderStatus(value)
+		if err != nil || got != want {
+			t.Fatalf("parseOMSPlatformOrderStatus(%q) = %d, %v; want %d", value, got, err, want)
 		}
 	}
 }

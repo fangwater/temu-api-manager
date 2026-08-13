@@ -602,9 +602,9 @@ func (s *Server) listShipments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listOMSPlatformOrders(w http.ResponseWriter, r *http.Request) {
-	status, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("status")))
-	if err != nil || status < 0 || status > 3 {
-		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "status must be 0, 1, 2, or 3"})
+	status, err := parseOMSPlatformOrderStatus(r.URL.Query().Get("status"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: err.Error()})
 		return
 	}
 	page, pageSize := pagination(r)
@@ -618,6 +618,18 @@ func (s *Server) listOMSPlatformOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response{Success: true, Data: items, Meta: map[string]any{
 		"page": page, "page_size": pageSize, "total": total, "status": status, "status_counts": counts,
 	}})
+}
+
+func parseOMSPlatformOrderStatus(value string) (int, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "missing" {
+		return -1, nil
+	}
+	status, err := strconv.Atoi(value)
+	if err != nil || status < 0 || status > 3 {
+		return 0, errors.New("status must be missing, 0, 1, 2, or 3")
+	}
+	return status, nil
 }
 
 func (s *Server) exportShipmentPOZIP(w http.ResponseWriter, r *http.Request) {

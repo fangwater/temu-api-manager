@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260813-1" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260813-3" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -219,13 +219,14 @@
               <button type="button" role="tab" aria-selected="false" data-oms-status="1"><span>状态 1</span><strong>待获取平台面单</strong><b id="metric-oms-status-1">0</b></button>
               <button type="button" role="tab" aria-selected="false" data-oms-status="2"><span>状态 2</span><strong>处理中</strong><b id="metric-oms-status-2">0</b></button>
               <button type="button" role="tab" aria-selected="false" data-oms-status="3"><span>状态 3</span><strong>已发货</strong><b id="metric-oms-status-3">0</b></button>
+              <button type="button" role="tab" aria-selected="false" data-oms-status="missing"><span>Temu 已发货</span><strong>领星无匹配订单</strong><b id="metric-oms-status-missing">0</b></button>
             </div>
             <div class="toolbar">
               <div class="oms-status-heading"><strong id="oms-status-heading">状态 0 · 待处理</strong><small id="oms-status-caption">等待领星匹配并推进订单</small></div>
               <span class="table-note" id="oms-status-total">共 0 条</span>
             </div>
             <div class="table-shell oms-status-table">
-              <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>领星状态</th><th>仓库校验</th><th>跟踪号</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
+              <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>领星状态</th><th>仓库校验</th><th>跟踪号</th><th>发货方式</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
               <div class="empty" id="oms-status-empty" hidden><svg><use href="#i-orders"/></svg><strong>当前状态没有订单</strong><span>后台核验到对应领星状态后会显示在这里</span></div>
             </div>
             <div class="pager" id="oms-status-pager" hidden></div>
@@ -318,6 +319,6 @@
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260813-1" defer></script>
+    <script src="./dashboard.js?v=20260813-4" defer></script>
   </body>
 </html>

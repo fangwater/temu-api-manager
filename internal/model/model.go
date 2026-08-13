@@ -199,21 +199,23 @@ type OMSSync struct {
 }
 
 type OMSPlatformOrderStatus struct {
-	PlatformOrderSN   string     `json:"platform_order_sn"`
-	OMSOrderNo        string     `json:"oms_order_no"`
-	OMSAccount        string     `json:"oms_account"`
-	Status            int        `json:"status"`
-	StatusKey         string     `json:"status_key"`
-	StatusText        string     `json:"status_text"`
-	WarehouseCode     string     `json:"warehouse_code"`
-	SendWarehouseCode string     `json:"send_warehouse_code"`
-	TrackingNumber    string     `json:"tracking_number"`
-	AuditTime         string     `json:"audit_time,omitempty"`
-	SyncStatus        string     `json:"sync_status"`
-	JobStatus         string     `json:"job_status"`
-	Archived          bool       `json:"archived"`
-	QueriedAt         time.Time  `json:"queried_at"`
-	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
+	PlatformOrderSN      string     `json:"platform_order_sn"`
+	OMSOrderNo           string     `json:"oms_order_no"`
+	OMSAccount           string     `json:"oms_account"`
+	Status               int        `json:"status"`
+	StatusKey            string     `json:"status_key"`
+	StatusText           string     `json:"status_text"`
+	WarehouseCode        string     `json:"warehouse_code"`
+	SendWarehouseCode    string     `json:"send_warehouse_code"`
+	TrackingNumber       string     `json:"tracking_number"`
+	AuditTime            string     `json:"audit_time,omitempty"`
+	SyncStatus           string     `json:"sync_status"`
+	JobStatus            string     `json:"job_status"`
+	AutomaticFulfillment bool       `json:"automatic_fulfillment"`
+	LabelReadyAt         *time.Time `json:"label_ready_at,omitempty"`
+	Archived             bool       `json:"archived"`
+	QueriedAt            time.Time  `json:"queried_at"`
+	VerifiedAt           *time.Time `json:"verified_at,omitempty"`
 }
 
 type PackageSpec struct {

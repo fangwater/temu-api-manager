@@ -124,7 +124,7 @@
 .combined-identifier{color:#465158;font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-size:9px;letter-spacing:0;overflow-wrap:anywhere;white-space:normal}
 @media(max-width:680px){#combined-total{display:block;margin-left:auto}.combined-table table{min-width:820px}.combined-table th:nth-child(2){width:205px}.combined-table th:nth-child(6){width:160px}}
 
-.oms-status-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:15px;border:1px solid #dfe2e4;border-radius:8px;background:#fff;overflow:hidden}
+.oms-status-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:15px;border:1px solid #dfe2e4;border-radius:8px;background:#fff;overflow:hidden}
 .oms-status-tabs button{min-width:0;height:74px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;align-content:center;gap:4px 10px;padding:0 16px;border:0;border-right:1px solid #e5e8e9;background:#fff;color:#646c72;text-align:left}
 .oms-status-tabs button:last-child{border-right:0}
 .oms-status-tabs button:hover{background:#f7f8f9}
@@ -136,16 +136,17 @@
 .oms-status-heading{display:flex;flex-direction:column;gap:3px}
 .oms-status-heading strong{color:#343a3f;font-size:11px}
 .oms-status-heading small{color:#858c91;font-size:9px}
-.oms-status-table table{min-width:1120px}
+.oms-status-table table{min-width:1290px}
 .oms-status-table th:first-child{width:190px}
 .oms-status-table th:nth-child(2){width:170px}
 .oms-status-table th:nth-child(3){width:80px}
 .oms-status-table th:nth-child(4){width:145px}
 .oms-status-table th:nth-child(5){width:160px}
 .oms-status-table th:nth-child(6){width:150px}
-.oms-status-table th:nth-child(7){width:110px}
-.oms-status-table th:nth-child(8){width:135px}
-@media(max-width:680px){.oms-status-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.oms-status-tabs button{border-bottom:1px solid #e5e8e9}.oms-status-tabs button:nth-child(2){border-right:0}.oms-status-tabs button:nth-child(n+3){border-bottom:0}.oms-status-heading small{max-width:210px;white-space:normal}.oms-status-table table{min-width:1050px}}
+.oms-status-table th:nth-child(7){width:175px}
+.oms-status-table th:nth-child(8){width:110px}
+.oms-status-table th:nth-child(9){width:135px}
+@media(max-width:680px){.oms-status-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}.oms-status-tabs button{border-bottom:1px solid #e5e8e9}.oms-status-tabs button:nth-child(even){border-right:0}.oms-status-tabs button:last-child{grid-column:1/-1;border-right:0;border-bottom:0}.oms-status-heading small{max-width:210px;white-space:normal}.oms-status-table table{min-width:1250px}}
 
 .split-plan-bar{
   display:grid;

@@ -119,15 +119,44 @@ func TestManualReviewWhereSupportsStatusAndSearch(t *testing.T) {
 
 func TestOMSPlatformOrderStatusText(t *testing.T) {
 	tests := map[int]string{
-		0: "待处理",
-		1: "待获取平台面单",
-		2: "处理中",
-		3: "已发货",
-		4: "",
+		omsPlatformOrderMissingStatus: "领星无匹配订单",
+		0:                             "待处理",
+		1:                             "待获取平台面单",
+		2:                             "处理中",
+		3:                             "已发货",
+		4:                             "",
 	}
 	for status, want := range tests {
 		if got := omsPlatformOrderStatusText(status); got != want {
 			t.Fatalf("omsPlatformOrderStatusText(%d) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestOMSPlatformOrderMissingRecordsRequireSuccessfulEmptyLookups(t *testing.T) {
+	for _, fragment := range []string{
+		"s.status='shipped'",
+		"s.confirmed_at IS NOT NULL",
+		"d.status IN ('waiting_sync','manual_required')",
+		"d.response_summary->>'source'='oms_platform_order'",
+		"jsonb_array_length(d.response_summary->'expected'->'orders')=0",
+		"jsonb_array_length(d.response_summary->'opposite'->'orders')=0",
+		"e.event_type='label_ready'",
+	} {
+		if !strings.Contains(omsPlatformOrderMissingRecords, fragment) {
+			t.Fatalf("missing-order query does not require %q", fragment)
+		}
+	}
+}
+
+func TestOMSPlatformOrderAutomationRequiresStartedJobBoundBeforeShipment(t *testing.T) {
+	for _, fragment := range []string{
+		"j.shipment_id=s.id",
+		"j.started_at IS NOT NULL",
+		"j.started_at <= s.created_at",
+	} {
+		if !strings.Contains(omsAutomaticFulfillmentSQL, fragment) {
+			t.Fatalf("OMS status query does not require %q for automatic fulfillment", fragment)
 		}
 	}
 }
