@@ -296,7 +296,12 @@
 .assignment-error{margin-top:12px;padding:10px 12px;border-left:3px solid #c9434c;background:#fff3f4;color:#9f3b43;font-size:10px;line-height:16px;overflow-wrap:anywhere}
 .assignment-load-error{min-height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;border-left:0;text-align:center}
 .assignment-load-error[hidden]{display:none}
-.assignment-row-action{white-space:nowrap}
+.assignment-row-action{display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;border-color:#9fc5b7;background:#f3f8f6;color:#28644f;font-weight:650}
+.assignment-row-action:hover{border-color:#5e927f;background:#eaf4f0}
+.assignment-row-action svg{width:14px;height:14px}
 .oms-status-table table{min-width:1400px}
-.oms-status-table th:nth-child(10){width:130px}
+.oms-status-table th:nth-child(10){width:132px}
+.oms-status-table th:last-child,.oms-status-table td:last-child{position:sticky;right:0;width:132px;min-width:132px;background:#fff;box-shadow:-10px 0 14px -14px rgba(31,39,44,.65);z-index:2}
+.oms-status-table th:last-child{background:#f7f8f9;z-index:3}
+.oms-status-table tbody tr:hover td:last-child{background:#fafbfb}
 @media(max-width:680px){.assignment-route-row{grid-template-columns:1fr}.assignment-route-row>svg{transform:rotate(90deg)}.assignment-route-row>div:last-child{text-align:left}.assignment-carriers>div{grid-template-columns:1fr}.warehouse-assignment-dialog .dialog-actions{display:grid;grid-template-columns:1fr 1fr}.warehouse-assignment-dialog .dialog-actions button{width:100%}}
