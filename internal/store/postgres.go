@@ -791,6 +791,88 @@ func sameLabelPurchaseCandidate(left, right model.LabelPurchaseCandidate) bool {
 		left.ChannelID == right.ChannelID && left.ShipCompanyID == right.ShipCompanyID
 }
 
+type commandExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+const ensureShipmentCompletionJobSQL = `
+INSERT INTO temu_auto_fulfillment_jobs(parent_order_sn,shipment_id,status,last_error)
+SELECT so.parent_order_sn,$1,$2,''
+FROM temu_shipment_orders so
+WHERE so.shipment_id=$1
+ON CONFLICT(parent_order_sn) DO UPDATE SET
+	shipment_id=EXCLUDED.shipment_id,
+	status=CASE
+		WHEN EXCLUDED.status='waiting_label'
+		 AND temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id
+		 AND temu_auto_fulfillment_jobs.status IN ('queued','running','waiting_label')
+		THEN temu_auto_fulfillment_jobs.status
+		WHEN EXCLUDED.status='confirming'
+		 AND temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id
+		 AND temu_auto_fulfillment_jobs.status IN ('running','confirming')
+		THEN temu_auto_fulfillment_jobs.status
+		WHEN EXCLUDED.status='waiting_oms'
+		 AND temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id
+		 AND temu_auto_fulfillment_jobs.status IN ('waiting_oms','completed')
+		THEN temu_auto_fulfillment_jobs.status
+		ELSE EXCLUDED.status
+	END,
+	last_error=CASE
+		WHEN temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id
+		 AND (
+			(EXCLUDED.status='waiting_label'
+			 AND temu_auto_fulfillment_jobs.status IN ('queued','running','waiting_label'))
+			OR (EXCLUDED.status='confirming'
+			 AND temu_auto_fulfillment_jobs.status IN ('running','confirming'))
+			OR (EXCLUDED.status='waiting_oms'
+			 AND temu_auto_fulfillment_jobs.status IN ('waiting_oms','completed'))
+		 )
+		THEN temu_auto_fulfillment_jobs.last_error
+		ELSE ''
+	END,
+	updated_at=now(),
+	completed_at=CASE
+		WHEN EXCLUDED.status='waiting_oms'
+		 AND temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id
+		 AND temu_auto_fulfillment_jobs.status='completed'
+		THEN temu_auto_fulfillment_jobs.completed_at
+		ELSE NULL
+	END`
+
+func completionJobStatusForShipment(status string) (string, bool) {
+	switch status {
+	case "submitting", "label_pending", "submission_unknown":
+		return "waiting_label", true
+	case "label_ready", "confirm_failed":
+		return "confirming", true
+	case "label_failed":
+		return "failed", true
+	case "shipped":
+		return "waiting_oms", true
+	default:
+		return "", false
+	}
+}
+
+func ensureShipmentCompletionJob(ctx context.Context, executor commandExecutor, shipmentID, shipmentStatus string) error {
+	jobStatus, ok := completionJobStatusForShipment(shipmentStatus)
+	if !ok {
+		return nil
+	}
+	tag, err := executor.Exec(ctx, ensureShipmentCompletionJobSQL, shipmentID, jobStatus)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (p *Postgres) EnsureShipmentCompletionJob(ctx context.Context, shipmentID, shipmentStatus string) error {
+	return ensureShipmentCompletionJob(ctx, p.pool, shipmentID, shipmentStatus)
+}
+
 func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment, choice model.LabelPurchaseChoice) (model.Shipment, bool, error) {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -799,6 +881,12 @@ func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment,
 	defer tx.Rollback(ctx)
 	existing, err := shipmentForOrder(ctx, tx, shipment.ParentOrderSN)
 	if err == nil {
+		if err := ensureShipmentCompletionJob(ctx, tx, existing.ID, existing.Status); err != nil {
+			return model.Shipment{}, false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return model.Shipment{}, false, err
+		}
 		return existing, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -813,6 +901,9 @@ func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment,
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			_ = tx.Rollback(ctx)
 			existing, lookupErr := p.ShipmentForOrder(ctx, shipment.ParentOrderSN)
+			if lookupErr == nil {
+				lookupErr = p.EnsureShipmentCompletionJob(ctx, existing.ID, existing.Status)
+			}
 			return existing, true, lookupErr
 		}
 		return model.Shipment{}, false, err
@@ -821,6 +912,9 @@ func (p *Postgres) ReserveShipment(ctx context.Context, shipment model.Shipment,
 		return model.Shipment{}, false, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type) VALUES($1,'submission_reserved')`, shipment.ID); err != nil {
+		return model.Shipment{}, false, err
+	}
+	if err = ensureShipmentCompletionJob(ctx, tx, shipment.ID, "submitting"); err != nil {
 		return model.Shipment{}, false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -848,6 +942,9 @@ func (p *Postgres) PrepareShipmentRetry(ctx context.Context, id string, replacem
 	}
 	payload, _ := json.Marshal(map[string]string{"quote_id": replacement.QuoteID})
 	if _, err := tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'submission_retry_reserved',$2)`, id, payload); err != nil {
+		return err
+	}
+	if err := ensureShipmentCompletionJob(ctx, tx, id, "submitting"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -908,6 +1005,9 @@ WHERE id=$1 AND status='label_failed' AND tracking_number='' AND confirmed_at IS
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'operator_recovery_reserved',$2)`, id, payload); err != nil {
+		return err
+	}
+	if err := ensureShipmentCompletionJob(ctx, tx, id, "submitting"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -1064,6 +1164,13 @@ func (p *Postgres) ListShipments(ctx context.Context, queue string, page, pageSi
 	return items, total, rows.Err()
 }
 
+const shipmentConfirmationStalledSQL = `(s.status='label_ready'
+	AND s.confirmed_at IS NULL
+	AND s.confirmation_attempts=0
+	AND cardinality(s.package_sn_list)>0
+	AND btrim(s.tracking_number)<>''
+	AND s.updated_at<now()-interval '5 minutes')`
+
 func shipmentQueueWhere(queue string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(queue)) {
 	case "", "all":
@@ -1071,9 +1178,9 @@ func shipmentQueueWhere(queue string) (string, error) {
 	case "ledger":
 		return ` WHERE s.status <> 'shipped'`, nil
 	case "processing":
-		return ` WHERE s.status IN ('submitting','label_pending','label_ready')`, nil
+		return ` WHERE s.status IN ('submitting','label_pending','label_ready') AND NOT ` + shipmentConfirmationStalledSQL, nil
 	case "exceptions":
-		return ` WHERE s.status IN ('submission_unknown','label_failed','confirm_failed')`, nil
+		return ` WHERE s.status IN ('submission_unknown','label_failed','confirm_failed') OR ` + shipmentConfirmationStalledSQL, nil
 	default:
 		return "", errors.New("invalid shipment queue")
 	}
@@ -1084,7 +1191,10 @@ func (p *Postgres) ShipmentStatusCounts(ctx context.Context, queue string) (map[
 	if err != nil {
 		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, `SELECT status,count(*) FROM temu_shipments s`+where+` GROUP BY status`)
+	statusSQL := `CASE WHEN ` + shipmentConfirmationStalledSQL +
+		` THEN 'confirmation_stalled' ELSE s.status END`
+	rows, err := p.pool.Query(ctx, `SELECT `+statusSQL+`,count(*) FROM temu_shipments s`+
+		where+` GROUP BY `+statusSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -1290,11 +1400,21 @@ func (p *Postgres) UpdateShipmentSubmission(ctx context.Context, id, status stri
 	if packageSNs == nil {
 		packageSNs = []string{}
 	}
-	_, err := p.pool.Exec(ctx, `UPDATE temu_shipments SET status=$2,package_sn_list=$3,response_payload=$4,error_code=$5,error_message=$6,updated_at=now() WHERE id=$1`, id, status, packageSNs, jsonOrEmpty(raw, "{}"), code, message)
-	if err == nil {
-		_, err = p.pool.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,$2,$3)`, id, status, jsonOrEmpty(raw, "{}"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE temu_shipments SET status=$2,package_sn_list=$3,response_payload=$4,error_code=$5,error_message=$6,updated_at=now() WHERE id=$1`, id, status, packageSNs, jsonOrEmpty(raw, "{}"), code, message); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,$2,$3)`, id, status, jsonOrEmpty(raw, "{}")); err != nil {
+		return err
+	}
+	if err = ensureShipmentCompletionJob(ctx, tx, id, status); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) RecordShipmentCarrierFailure(ctx context.Context, id, carrierCode string) error {
@@ -1315,11 +1435,21 @@ WHERE id=$1
 }
 
 func (p *Postgres) UpdateShipmentResult(ctx context.Context, id, status, tracking string, raw json.RawMessage, code, message string) error {
-	_, err := p.pool.Exec(ctx, `UPDATE temu_shipments SET status=$2,tracking_number=CASE WHEN $3='' THEN tracking_number ELSE $3 END,response_payload=$4,error_code=$5,error_message=$6,updated_at=now() WHERE id=$1`, id, status, tracking, jsonOrEmpty(raw, "{}"), code, message)
-	if err == nil {
-		_, err = p.pool.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,$2,$3)`, id, status, jsonOrEmpty(raw, "{}"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE temu_shipments SET status=$2,tracking_number=CASE WHEN $3='' THEN tracking_number ELSE $3 END,response_payload=$4,error_code=$5,error_message=$6,updated_at=now() WHERE id=$1`, id, status, tracking, jsonOrEmpty(raw, "{}"), code, message); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,$2,$3)`, id, status, jsonOrEmpty(raw, "{}")); err != nil {
+		return err
+	}
+	if err = ensureShipmentCompletionJob(ctx, tx, id, status); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) ReconcileShipmentResultCarrier(ctx context.Context, id string, channelID, shipCompanyID int64, companyName, logisticsType string) error {
@@ -1339,11 +1469,21 @@ WHERE id=$1
 }
 
 func (p *Postgres) MarkShipmentConfirmed(ctx context.Context, id string, raw json.RawMessage) error {
-	_, err := p.pool.Exec(ctx, `UPDATE temu_shipments SET status='shipped',response_payload=$2,error_code='',error_message='',updated_at=now(),confirmed_at=now() WHERE id=$1`, id, jsonOrEmpty(raw, "{}"))
-	if err == nil {
-		_, err = p.pool.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'shipped',$2)`, id, jsonOrEmpty(raw, "{}"))
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE temu_shipments SET status='shipped',response_payload=$2,error_code='',error_message='',updated_at=now(),confirmed_at=now() WHERE id=$1`, id, jsonOrEmpty(raw, "{}")); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO temu_shipment_events(shipment_id,event_type,payload) VALUES($1,'shipped',$2)`, id, jsonOrEmpty(raw, "{}")); err != nil {
+		return err
+	}
+	if err = ensureShipmentCompletionJob(ctx, tx, id, "shipped"); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (p *Postgres) StartOMSSync(ctx context.Context, shipmentID string, mapping model.WarehouseMapping, tracking string) (model.OMSSync, bool, error) {
@@ -1466,6 +1606,60 @@ JOIN public.temu_warehouse_mappings m ON m.oms_warehouse_key=q.oms_warehouse_key
 	}
 	return ids, rows.Err()
 }
+
+const repairShipmentCompletionJobsSQL = `
+WITH candidates AS (
+	SELECT so.parent_order_sn,s.id AS shipment_id
+	FROM temu_shipments s
+	JOIN temu_shipment_orders so ON so.shipment_id=s.id
+	LEFT JOIN temu_auto_fulfillment_jobs j ON j.parent_order_sn=so.parent_order_sn
+	WHERE s.status='label_ready'
+	  AND s.confirmed_at IS NULL
+	  AND s.confirmation_attempts=0
+	  AND cardinality(s.package_sn_list)>0
+	  AND btrim(s.tracking_number)<>''
+	  AND s.updated_at<$1
+	  AND (
+		j.parent_order_sn IS NULL
+		OR j.shipment_id IS DISTINCT FROM s.id
+		OR j.status NOT IN ('running','waiting_label','confirming')
+	  )
+	ORDER BY s.updated_at
+	FOR UPDATE OF s SKIP LOCKED
+	LIMIT $2
+),
+repaired AS (
+	INSERT INTO temu_auto_fulfillment_jobs(
+		parent_order_sn,shipment_id,status,last_error,updated_at,completed_at
+	)
+	SELECT parent_order_sn,shipment_id,'confirming','',now(),NULL
+	FROM candidates
+	ON CONFLICT(parent_order_sn) DO UPDATE SET
+		shipment_id=EXCLUDED.shipment_id,status='confirming',last_error='',
+		updated_at=now(),completed_at=NULL
+	WHERE temu_auto_fulfillment_jobs.shipment_id IS DISTINCT FROM EXCLUDED.shipment_id
+	   OR temu_auto_fulfillment_jobs.status
+	      NOT IN ('running','waiting_label','confirming')
+	RETURNING parent_order_sn,shipment_id
+),
+events AS (
+	INSERT INTO temu_shipment_events(shipment_id,event_type,payload)
+	SELECT shipment_id,'confirmation_job_repaired',
+		jsonb_build_object('source','stalled_label_ready_repair')
+	FROM repaired
+	RETURNING shipment_id
+)
+SELECT count(*) FROM events`
+
+func (p *Postgres) RepairShipmentCompletionJobs(ctx context.Context, staleBefore time.Time, limit int) (int, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	var repaired int
+	err := p.pool.QueryRow(ctx, repairShipmentCompletionJobsSQL, staleBefore, limit).Scan(&repaired)
+	return repaired, err
+}
+
 func (p *Postgres) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN string) (model.AutoFulfillmentJob, error) {
 	row := p.pool.QueryRow(ctx, `
 		INSERT INTO temu_auto_fulfillment_jobs(parent_order_sn,status)

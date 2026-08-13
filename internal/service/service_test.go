@@ -165,6 +165,39 @@ func TestShipmentSubmissionRetryDue(t *testing.T) {
 	}
 }
 
+func TestShipmentConfirmationStalled(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	base := model.Shipment{
+		Status:         "label_ready",
+		PackageSNList:  []string{"PK-1"},
+		TrackingNumber: "TRACK-1",
+		UpdatedAt:      now.Add(-shipmentConfirmationStallDelay - time.Second),
+	}
+	if !shipmentConfirmationStalled(base, now) {
+		t.Fatal("complete untouched label older than five minutes must be marked stalled")
+	}
+	recent := base
+	recent.UpdatedAt = now.Add(-shipmentConfirmationStallDelay)
+	if shipmentConfirmationStalled(recent, now) {
+		t.Fatal("five-minute boundary must remain in normal processing")
+	}
+	attempted := base
+	attempted.ConfirmationAttempts = 1
+	if shipmentConfirmationStalled(attempted, now) {
+		t.Fatal("an attempted confirmation must use normal retry/failure handling")
+	}
+	missingTracking := base
+	missingTracking.TrackingNumber = ""
+	if shipmentConfirmationStalled(missingTracking, now) {
+		t.Fatal("incomplete label evidence must not be repaired as a confirmation orphan")
+	}
+	shipped := base
+	shipped.Status = "shipped"
+	if shipmentConfirmationStalled(shipped, now) {
+		t.Fatal("shipped records cannot be stalled confirmations")
+	}
+}
+
 func TestDeliveryAddressUnsupported(t *testing.T) {
 	if !deliveryAddressUnsupported("Order failed: the delivery address is not supported for our service") {
 		t.Fatal("documented address rejection must be recognized")

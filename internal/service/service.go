@@ -30,6 +30,7 @@ var numericText = regexp.MustCompile(`[-+]?[0-9]*\.?[0-9]+`)
 
 const (
 	shipmentSubmissionRetryDelay    = 2 * time.Minute
+	shipmentConfirmationStallDelay  = 5 * time.Minute
 	maxShipmentSubmissionAttempts   = 3
 	maxShipmentConfirmationAttempts = 3
 )
@@ -1645,8 +1646,8 @@ func (s *Service) PurchaseAndQueueCompletion(ctx context.Context, quoteID string
 	}
 	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, queueErr := s.EnqueueAutoFulfillment(queueCtx, result.Shipment.ParentOrderSN); queueErr != nil {
-		wrapped := fmt.Errorf("面单已记账，但自动确认任务入队失败，请勿重复购买: %w", queueErr)
+	if queueErr := s.store.EnsureShipmentCompletionJob(queueCtx, result.Shipment.ID, result.Shipment.Status); queueErr != nil {
+		wrapped := fmt.Errorf("面单已记账，但自动确认任务关联失败，请勿重复购买: %w", queueErr)
 		return result, errors.Join(purchaseErr, wrapped)
 	}
 	return result, purchaseErr
@@ -1764,8 +1765,8 @@ func (s *Service) RecoverFailedShipmentAndQueueCompletion(ctx context.Context, s
 	}
 	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, queueErr := s.EnqueueAutoFulfillment(queueCtx, result.Shipment.ParentOrderSN); queueErr != nil {
-		wrapped := fmt.Errorf("面单恢复已记账，但自动确认任务入队失败，请勿重复提交: %w", queueErr)
+	if queueErr := s.store.EnsureShipmentCompletionJob(queueCtx, result.Shipment.ID, result.Shipment.Status); queueErr != nil {
+		wrapped := fmt.Errorf("面单恢复已记账，但自动确认任务关联失败，请勿重复提交: %w", queueErr)
 		return result, errors.Join(recoveryErr, wrapped)
 	}
 	return result, recoveryErr
@@ -2227,6 +2228,13 @@ func (s *Service) ProcessAutoFulfillments(ctx context.Context, retryAfter time.D
 	if concurrency < 1 {
 		concurrency = 1
 	}
+	repaired, err := s.store.RepairShipmentCompletionJobs(ctx, time.Now().Add(-shipmentConfirmationStallDelay), 20)
+	if err != nil {
+		return 0, fmt.Errorf("repair stalled shipment confirmation jobs: %w", err)
+	}
+	if repaired > 0 && s.logger != nil {
+		s.logger.Warn("repaired stalled shipment confirmation jobs", "count", repaired)
+	}
 	jobs, err := s.store.ClaimAutoFulfillments(ctx, time.Now().Add(-retryAfter), concurrency)
 	if err != nil {
 		return 0, err
@@ -2614,7 +2622,28 @@ func packageSNsFromStoredOrderDetail(raw json.RawMessage) ([]string, error) {
 }
 
 func (s *Service) ListShipments(ctx context.Context, queue string, page, pageSize int) ([]model.Shipment, int, error) {
-	return s.store.ListShipments(ctx, queue, page, pageSize)
+	items, total, err := s.store.ListShipments(ctx, queue, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	now := time.Now()
+	for index := range items {
+		items[index].ConfirmationStalled = shipmentConfirmationStalled(items[index], now)
+	}
+	return items, total, nil
+}
+
+func shipmentConfirmationStalled(shipment model.Shipment, now time.Time) bool {
+	if shipment.Status != "label_ready" || shipment.ConfirmedAt != nil || shipment.ConfirmationAttempts != 0 {
+		return false
+	}
+	if len(shipment.PackageSNList) == 0 || strings.TrimSpace(shipment.TrackingNumber) == "" {
+		return false
+	}
+	if shipment.UpdatedAt.IsZero() {
+		return false
+	}
+	return shipment.UpdatedAt.Before(now.Add(-shipmentConfirmationStallDelay))
 }
 func (s *Service) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
 	return s.store.ListOMSPlatformOrderStatuses(ctx, status, page, pageSize)

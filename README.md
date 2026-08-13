@@ -11,6 +11,34 @@ confirms the Temu shipment, and then waits for read-only XLWMS verification.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
+## Stalled Label Confirmation Recovery
+
+Shipment reservation now creates or binds its durable completion job in the
+same PostgreSQL transaction as the shipment and order link. Submission refresh,
+operator recovery, label-result refresh, and Temu confirmation also update the
+job state in the same transaction. This prevents a recovered `label_ready`
+shipment from remaining attached to an older failed job.
+
+Every automatic-fulfillment cycle audits a narrowly defined orphan state:
+
+1. Shipment status is `label_ready` and it is not confirmed.
+2. A package number and tracking number are both present.
+3. `confirmation_attempts` is still `0`.
+4. The shipment has not changed for more than five minutes.
+5. Its completion job is missing, points at another shipment, or is no longer
+   in an active `running`, `waiting_label`, or `confirming` state.
+
+Matching jobs are rebound as `confirming`, their obsolete job error is cleared,
+and a `confirmation_job_repaired` shipment event is recorded. The worker logs a
+warning with the repaired count. Records that cross the five-minute threshold
+move from **自动处理中** to **自动发货异常** and the API exposes
+`confirmation_stalled: true`; the dashboard shows **确认任务异常** instead of the
+misleading **后台处理中** label.
+
+The repair does not reset shipments that have already attempted Temu
+confirmation. Those continue through the existing retry limit and terminal
+`confirm_failed` handling.
+
 ## Assign A Purchased-Label Order In XLWMS
 
 After Temu confirms a purchased label, the platform order can be pushed into

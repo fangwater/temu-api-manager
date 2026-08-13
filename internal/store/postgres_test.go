@@ -177,3 +177,85 @@ func TestShipmentQueueWhereExcludesShippedFromLedger(t *testing.T) {
 		t.Fatal("unsupported shipment queue was accepted")
 	}
 }
+
+func TestShipmentQueueWhereClassifiesStalledConfirmationAsException(t *testing.T) {
+	processing, err := shipmentQueueWhere("processing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exceptions, err := shipmentQueueWhere("exceptions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{
+		"s.status='label_ready'",
+		"s.confirmation_attempts=0",
+		"cardinality(s.package_sn_list)>0",
+		"btrim(s.tracking_number)<>''",
+		"interval '5 minutes'",
+	} {
+		if !strings.Contains(shipmentConfirmationStalledSQL, fragment) {
+			t.Errorf("stalled confirmation predicate is missing %q", fragment)
+		}
+	}
+	if !strings.Contains(processing, "AND NOT "+shipmentConfirmationStalledSQL) {
+		t.Fatalf("processing queue does not exclude stalled confirmations: %s", processing)
+	}
+	if !strings.Contains(exceptions, "OR "+shipmentConfirmationStalledSQL) {
+		t.Fatalf("exception queue does not include stalled confirmations: %s", exceptions)
+	}
+}
+
+func TestShipmentCompletionJobBindingPreservesOnlyActiveSameShipment(t *testing.T) {
+	for _, fragment := range []string{
+		"SELECT so.parent_order_sn,$1,$2,''",
+		"shipment_id=EXCLUDED.shipment_id",
+		"temu_auto_fulfillment_jobs.shipment_id=EXCLUDED.shipment_id",
+		"status IN ('running','confirming')",
+		"ELSE EXCLUDED.status",
+		"EXCLUDED.status='waiting_oms'",
+		"AND temu_auto_fulfillment_jobs.status='completed'",
+		"ELSE ''",
+	} {
+		if !strings.Contains(ensureShipmentCompletionJobSQL, fragment) {
+			t.Errorf("shipment completion binding is missing %q", fragment)
+		}
+	}
+	tests := map[string]string{
+		"submitting":         "waiting_label",
+		"label_pending":      "waiting_label",
+		"submission_unknown": "waiting_label",
+		"label_ready":        "confirming",
+		"confirm_failed":     "confirming",
+		"label_failed":       "failed",
+		"shipped":            "waiting_oms",
+	}
+	for shipmentStatus, want := range tests {
+		got, ok := completionJobStatusForShipment(shipmentStatus)
+		if !ok || got != want {
+			t.Errorf("completionJobStatusForShipment(%q)=(%q,%v), want (%q,true)", shipmentStatus, got, ok, want)
+		}
+	}
+	if got, ok := completionJobStatusForShipment("unknown"); ok || got != "" {
+		t.Fatalf("unknown shipment state must not alter the completion job: (%q,%v)", got, ok)
+	}
+}
+
+func TestShipmentCompletionRepairIsLimitedToUntouchedCompleteLabels(t *testing.T) {
+	for _, fragment := range []string{
+		"s.status='label_ready'",
+		"s.confirmation_attempts=0",
+		"cardinality(s.package_sn_list)>0",
+		"btrim(s.tracking_number)<>''",
+		"j.shipment_id IS DISTINCT FROM s.id",
+		"j.status NOT IN ('running','waiting_label','confirming')",
+		"FOR UPDATE OF s SKIP LOCKED",
+		"temu_auto_fulfillment_jobs.shipment_id IS DISTINCT FROM EXCLUDED.shipment_id",
+		"SELECT count(*) FROM events",
+		"'confirmation_job_repaired'",
+	} {
+		if !strings.Contains(repairShipmentCompletionJobsSQL, fragment) {
+			t.Errorf("shipment completion repair is missing %q", fragment)
+		}
+	}
+}

@@ -1277,6 +1277,9 @@ function renderHistory() {
 function omsSyncCell(shipment) {
   const sync = shipment.oms_sync;
   const warehouse = [shipment.oms_warehouse_key, shipment.oms_warehouse_code].filter(Boolean).join(" · ") || "仓库配置缺失";
+  if (shipment.confirmation_stalled) {
+    return `<div class="oms-sync-check"><span class="status-badge failed">确认任务异常</span><small>尚未进入领星同步 · ${escapeHtml(warehouse)}</small></div>`;
+  }
   if (shipment.status !== "shipped") {
     return `<div class="oms-sync-check"><span class="status-badge neutral">后台处理中</span><small>${escapeHtml(warehouse)}</small></div>`;
   }
@@ -1293,7 +1296,9 @@ function omsSyncCell(shipment) {
   return `<div class="oms-sync-check"><span class="status-badge ${tone}">${escapeHtml(label)}</span><small title="${escapeHtml(detail)}">${escapeHtml(detail)}</small></div>`;
 }
 function shipmentRow(shipment, withRecoveryAction = false) {
-	const retryInfo = shipment.status === "submission_unknown"
+	const retryInfo = shipment.confirmation_stalled
+		? `<small>面单已就绪，但确认任务超过 5 分钟未执行；后台将自动修复</small>`
+		: shipment.status === "submission_unknown"
 		? `<small>安全重提 ${shipment.submission_attempts || 1}/3 · 每次间隔 2 分钟</small>`
 		: shipment.status === "confirm_failed"
 			? `<small>确认重试 ${shipment.confirmation_attempts || 1}/3</small>`
@@ -1302,7 +1307,7 @@ function shipmentRow(shipment, withRecoveryAction = false) {
     <td><div class="order-id"><strong>${escapeHtml(shipment.parent_order_sn)}</strong><small>${escapeHtml(shipment.id)}</small></div></td>
     <td><div class="order-id"><strong>${escapeHtml(shipment.shipping_company_name || "-")}</strong><small>${escapeHtml(shipment.ship_logistics_type || "-")}</small></div></td>
     <td><div class="order-id"><strong>${escapeHtml(shipment.package_sn_list?.join("、") || "等待包裹号")}</strong><small>${escapeHtml(shipment.tracking_number || "等待跟踪号")}</small></div></td>
-	<td><span class="status-badge ${statusClass(shipment.status)}">${statusText(shipment.status)}</span>${shipment.error_message ? `<div class="order-id"><small title="${escapeHtml(shipment.error_message)}">${escapeHtml(shipment.error_message)}</small>${retryInfo}</div>` : retryInfo}</td>
+	<td><span class="status-badge ${shipment.confirmation_stalled ? "failed" : statusClass(shipment.status)}">${shipment.confirmation_stalled ? "确认任务异常" : statusText(shipment.status)}</span>${shipment.error_message ? `<div class="order-id"><small title="${escapeHtml(shipment.error_message)}">${escapeHtml(shipment.error_message)}</small>${retryInfo}</div>` : retryInfo}</td>
     <td>${omsSyncCell(shipment)}</td>
     <td>${formatTime(shipment.created_at)}</td>
     ${withRecoveryAction ? `<td>${shipment.status === "label_failed" && !shipment.tracking_number && !shipment.confirmed_at && !(shipment.package_sn_list || []).length ? `<button class="row-action recovery-action" data-recover-shipment="${escapeHtml(shipment.id)}">重新选择并发货</button>` : shipment.status === "label_failed" && (shipment.package_sn_list || []).length ? `<span class="status-badge pending">Temu 后台切换自发货</span>` : "-"}</td>` : ""}
@@ -1331,7 +1336,7 @@ function renderExceptionQueue() {
   $("#exceptions-empty").hidden = items.length > 0;
   $("#metric-exception-unknown").textContent = counts.submission_unknown || 0;
   $("#metric-exception-label").textContent = counts.label_failed || 0;
-  $("#metric-exception-confirm").textContent = counts.confirm_failed || 0;
+  $("#metric-exception-confirm").textContent = (counts.confirm_failed || 0) + (counts.confirmation_stalled || 0);
   $("#metric-exception-total").textContent = state.exceptionMeta.total ?? items.length;
   $("#nav-exception-count").textContent = state.exceptionMeta.total ?? items.length;
   renderPager("#exceptions-pager", state.exceptionMeta, "exceptions", () => loadShipmentQueue("exceptions"));
@@ -1352,7 +1357,7 @@ function renderShipments() {
   $("#shipments-empty").hidden = items.length > 0;
   $("#metric-ledger-total").textContent = state.shipmentMeta.total ?? items.length;
   $("#metric-ledger-processing").textContent = (counts.submitting || 0) + (counts.label_pending || 0) + (counts.label_ready || 0);
-  $("#metric-ledger-exceptions").textContent = (counts.submission_unknown || 0) + (counts.label_failed || 0) + (counts.confirm_failed || 0);
+  $("#metric-ledger-exceptions").textContent = (counts.submission_unknown || 0) + (counts.label_failed || 0) + (counts.confirm_failed || 0) + (counts.confirmation_stalled || 0);
   renderPager("#ledger-pager", state.shipmentMeta, "ledger", () => loadShipmentQueue("ledger"));
 }
 

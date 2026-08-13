@@ -288,6 +288,7 @@ type Shipment struct {
 	LastSubmissionAt     time.Time       `json:"last_submission_at"`
 	ConfirmationAttempts int             `json:"confirmation_attempts"`
 	LastConfirmationAt   *time.Time      `json:"last_confirmation_at,omitempty"`
+	ConfirmationStalled  bool            `json:"confirmation_stalled"`
 	CreatedAt            time.Time       `json:"created_at"`
 	UpdatedAt            time.Time       `json:"updated_at"`
 	ConfirmedAt          *time.Time      `json:"confirmed_at,omitempty"`
