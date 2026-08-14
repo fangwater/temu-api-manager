@@ -37,7 +37,7 @@ bounded queue while historical ledger entries are reconciled.
 The normalized outcomes are:
 
 - no matching order: wait for up to 30 minutes after label confirmation, then mark the shipment for manual supplement;
-- status `0` (`待处理`): keep waiting for OMS matching;
+- status `0` (`待处理`): validate the purchased-label warehouse, automatically assign the warehouse and `_AUTO_MATCH_` logistics, then wait for OMS progression;
 - status `1` (`待获取平台面单`): keep waiting for the platform label;
 - status `2` (`处理中`) or `3` (`已发货`): verify the selected warehouse and complete the automatic-fulfillment ledger entry;
 - status `4`, `5`, `6`, an unknown status, a warehouse mismatch, or duplicate matches: require manual handling.

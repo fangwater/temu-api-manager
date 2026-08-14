@@ -7,7 +7,8 @@ The production fulfillment console is implemented in Go under `cmd/server`.
 The operator first previews live XLWMS inventory, chooses an eligible warehouse
 and Temu carrier, and confirms the Buy Label purchase. After a shipment record
 is created, the durable PostgreSQL worker automatically waits for the label,
-confirms the Temu shipment, and then waits for read-only XLWMS verification.
+confirms the Temu shipment, assigns pending XLWMS orders, and verifies the final
+XLWMS fulfillment state.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
@@ -39,15 +40,16 @@ The repair does not reset shipments that have already attempted Temu
 confirmation. Those continue through the existing retry limit and terminal
 `confirm_failed` handling.
 
-## Assign A Purchased-Label Order In XLWMS
+## Automatically Assign A Purchased-Label Order In XLWMS
 
 After Temu confirms a purchased label, the platform order can be pushed into
 XLWMS as status `0` (pending). The dashboard exposes this under
-**领星订单状态 -> 待处理**. Each pending row has a **分配仓库物流** action that
-opens the same automatic warehouse-routing confirmation used by the XLWMS
-console.
+**领星订单状态 -> 待处理**. The background reconciliation worker automatically
+runs the same authoritative warehouse-routing preview used by the XLWMS console,
+then submits the order with logistics carrier `_AUTO_MATCH_`. No operator click
+is required.
 
-The browser calls same-origin Temu endpoints:
+The same-origin endpoints remain available for recovery and diagnostics:
 
 ```text
 GET  /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment-preview
@@ -63,13 +65,13 @@ Submit body:
 }
 ```
 
-`logistics_carrier` can be `_AUTO_MATCH_` or `other`. The Temu service resolves
+Automatic reconciliation always uses `_AUTO_MATCH_`. The Temu service resolves
 the OMS account and warehouse from the selected shop's immutable purchased-label
-ledger, then calls the XLWMS routing preview and warehouse-assignment APIs. The
-browser cannot provide `account` or `warehouse_code`; strict JSON decoding
-rejects both fields.
+ledger, then calls the XLWMS routing preview and warehouse-assignment APIs. A
+client cannot provide `account` or `warehouse_code`; strict JSON decoding rejects
+both fields.
 
-Before preview and again immediately before submission, the server requires:
+Before every automatic submission, the server requires:
 
 1. The selected Temu shop has one confirmed shipment for the parent order.
 2. The shipment has a tracking number and at least one package number.
@@ -83,7 +85,9 @@ Before preview and again immediately before submission, the server requires:
 Submission assigns the purchased-label warehouse, selects the upload-label
 channel, and immediately approves the XLWMS platform order. XLWMS performs a
 final live pending-state check, so a repeated or racing submission is rejected
-instead of approving the order twice.
+instead of approving the order twice. A successful assignment marker is stored
+in the OMS reconciliation summary so a delayed XLWMS status update does not
+cause another submission.
 
 ## Shop SKU Warehouse Rules
 

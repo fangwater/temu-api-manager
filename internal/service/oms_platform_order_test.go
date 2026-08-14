@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -80,5 +81,38 @@ func TestAutoFulfillmentOMSFailureStatus(t *testing.T) {
 	}
 	if got := autoFulfillmentOMSFailureStatus(errOMSManualRequired); got != "failed" {
 		t.Fatalf("manual error status = %q", got)
+	}
+}
+
+func TestOMSPlatformOrderSummaryPreservesWarehouseAssignmentAudit(t *testing.T) {
+	completedAt := time.Date(2026, 8, 14, 2, 30, 0, 0, time.UTC)
+	audit := &omsWarehouseAssignmentAudit{
+		Status: "succeeded", OMSOrderNo: "SO-1", OMSAccount: "dps",
+		WarehouseCode: "DPSNY002", LogisticsCarrier: oms.AutoMatchCarrier, CompletedAt: &completedAt,
+	}
+	expected := oms.PlatformOrderLookup{
+		Account: "dps", Found: true, MatchCount: 1,
+		Orders: []oms.PlatformOrder{{OMSOrderNo: "SO-1", PlatformOrderNo: "PO-1", Status: 0}},
+	}
+	summary := omsPlatformOrderSummary(
+		model.WarehouseMapping{OMSKey: "DPS002", OMSWarehouseCode: "DPSNY002", OMSAccount: "dps"},
+		expected,
+		oms.PlatformOrderLookup{Account: "arp"},
+		omsPlatformOrderDecision{State: "pending"},
+		audit,
+	)
+	if !json.Valid(summary) {
+		t.Fatalf("invalid summary: %s", summary)
+	}
+	shipment := model.Shipment{OMSSync: &model.OMSSync{Summary: summary}}
+	restored := omsWarehouseAssignmentAuditFromShipment(shipment)
+	if restored == nil || restored.Status != "succeeded" || restored.LogisticsCarrier != oms.AutoMatchCarrier || restored.CompletedAt == nil || !restored.CompletedAt.Equal(completedAt) {
+		t.Fatalf("restored audit = %#v", restored)
+	}
+	failureSummary := omsPlatformOrderFailureSummary(shipment, model.WarehouseMapping{OMSKey: "DPS002", OMSWarehouseCode: "DPSNY002", OMSAccount: "dps"})
+	failureShipment := model.Shipment{OMSSync: &model.OMSSync{Summary: failureSummary}}
+	restoredAfterFailure := omsWarehouseAssignmentAuditFromShipment(failureShipment)
+	if restoredAfterFailure == nil || restoredAfterFailure.Status != "succeeded" || restoredAfterFailure.CompletedAt == nil || !restoredAfterFailure.CompletedAt.Equal(completedAt) {
+		t.Fatalf("assignment audit lost after query failure: %#v", restoredAfterFailure)
 	}
 }

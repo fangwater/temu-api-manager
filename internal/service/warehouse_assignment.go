@@ -46,6 +46,15 @@ type warehouseAssignmentTarget struct {
 	order    oms.PlatformOrder
 }
 
+type omsWarehouseAssignmentAudit struct {
+	Status           string     `json:"status"`
+	OMSOrderNo       string     `json:"oms_order_no"`
+	OMSAccount       string     `json:"oms_account"`
+	WarehouseCode    string     `json:"warehouse_code"`
+	LogisticsCarrier string     `json:"logistics_carrier"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+}
+
 func (s *Service) PreviewWarehouseAssignment(ctx context.Context, parentOrderSN string) (WarehouseAssignmentPreview, error) {
 	target, err := s.warehouseAssignmentTarget(ctx, parentOrderSN)
 	if err != nil {
@@ -66,29 +75,37 @@ func (s *Service) AssignWarehouse(ctx context.Context, parentOrderSN, logisticsC
 	if err != nil {
 		return WarehouseAssignmentOutcome{}, err
 	}
-	preview, err := s.oms.PreviewWarehouseAssignment(ctx, target.account, target.shipment.ParentOrderSN)
-	if err != nil {
-		return WarehouseAssignmentOutcome{}, err
-	}
-	if err := validateWarehouseAssignmentPreview(target, preview); err != nil {
-		return WarehouseAssignmentOutcome{}, err
-	}
-	result, err := s.oms.AssignWarehouse(ctx, target.account, target.shipment.ParentOrderSN, logisticsCarrier)
+	result, err := s.assignWarehouseTarget(ctx, target, logisticsCarrier)
 	outcome := WarehouseAssignmentOutcome{ParentOrderSN: target.shipment.ParentOrderSN, OMSAccount: target.account, Result: result}
 	if err != nil {
 		return outcome, err
+	}
+	if _, refreshErr := s.CheckOMSSync(ctx, target.shipment.ID); refreshErr != nil && s.logger != nil {
+		s.logger.Warn("refresh OMS platform order after warehouse assignment", "parent_order_sn", target.shipment.ParentOrderSN, "error", refreshErr)
+	}
+	return outcome, nil
+}
+
+func (s *Service) assignWarehouseTarget(ctx context.Context, target warehouseAssignmentTarget, logisticsCarrier string) (oms.WarehouseAssignmentResult, error) {
+	preview, err := s.oms.PreviewWarehouseAssignment(ctx, target.account, target.shipment.ParentOrderSN)
+	if err != nil {
+		return oms.WarehouseAssignmentResult{}, err
+	}
+	if err := validateWarehouseAssignmentPreview(target, preview); err != nil {
+		return oms.WarehouseAssignmentResult{}, err
+	}
+	result, err := s.oms.AssignWarehouse(ctx, target.account, target.shipment.ParentOrderSN, logisticsCarrier)
+	if err != nil {
+		return result, err
 	}
 	if result.Total != 1 || result.Success != 1 || result.Failed != 0 {
 		message := "领星未确认仓库分配结果"
 		if len(result.Failures) > 0 && strings.TrimSpace(result.Failures[0].Error) != "" {
 			message = strings.TrimSpace(result.Failures[0].Error)
 		}
-		return outcome, fmt.Errorf("%w：%s", ErrWarehouseAssignmentUnavailable, message)
+		return result, fmt.Errorf("%w：%s", ErrWarehouseAssignmentUnavailable, message)
 	}
-	if _, refreshErr := s.CheckOMSSync(ctx, target.shipment.ID); refreshErr != nil && s.logger != nil {
-		s.logger.Warn("refresh OMS platform order after warehouse assignment", "parent_order_sn", target.shipment.ParentOrderSN, "error", refreshErr)
-	}
-	return outcome, nil
+	return result, nil
 }
 
 func (s *Service) warehouseAssignmentTarget(ctx context.Context, parentOrderSN string) (warehouseAssignmentTarget, error) {
@@ -121,10 +138,60 @@ func (s *Service) warehouseAssignmentTarget(ctx context.Context, parentOrderSN s
 	if err != nil {
 		return warehouseAssignmentTarget{}, err
 	}
+	return newWarehouseAssignmentTarget(shipment, mapping, account, lookup)
+}
+
+func newWarehouseAssignmentTarget(shipment model.Shipment, mapping model.WarehouseMapping, account string, lookup oms.PlatformOrderLookup) (warehouseAssignmentTarget, error) {
 	if err := validateWarehouseAssignmentSource(shipment, mapping, lookup); err != nil {
 		return warehouseAssignmentTarget{}, err
 	}
 	return warehouseAssignmentTarget{shipment: shipment, mapping: mapping, account: account, order: lookup.Orders[0]}, nil
+}
+
+func (s *Service) assignPendingOMSPlatformOrder(
+	ctx context.Context,
+	shipment model.Shipment,
+	mapping model.WarehouseMapping,
+	lookup oms.PlatformOrderLookup,
+	previous *omsWarehouseAssignmentAudit,
+) (*omsWarehouseAssignmentAudit, bool, error) {
+	if s.oms == nil {
+		return nil, false, errors.New("warehouse assignment service is not configured")
+	}
+	account, ok := normalizeOMSAccount(mapping.OMSAccount)
+	if !ok {
+		return nil, false, fmt.Errorf("%w：买单仓库没有可用的领星账户", ErrWarehouseAssignmentUnavailable)
+	}
+	target, err := newWarehouseAssignmentTarget(shipment, mapping, account, lookup)
+	if err != nil {
+		return nil, false, err
+	}
+	if warehouseAssignmentAuditMatches(previous, target) {
+		return previous, false, nil
+	}
+
+	audit := &omsWarehouseAssignmentAudit{
+		Status: "retrying", OMSOrderNo: target.order.OMSOrderNo, OMSAccount: target.account,
+		WarehouseCode: target.mapping.OMSWarehouseCode, LogisticsCarrier: oms.AutoMatchCarrier,
+	}
+	result, err := s.assignWarehouseTarget(ctx, target, oms.AutoMatchCarrier)
+	if err != nil {
+		return audit, false, err
+	}
+	completedAt := result.CompletedAt
+	if completedAt.IsZero() {
+		completedAt = time.Now().UTC()
+	}
+	audit.Status = "succeeded"
+	audit.CompletedAt = &completedAt
+	return audit, true, nil
+}
+
+func warehouseAssignmentAuditMatches(audit *omsWarehouseAssignmentAudit, target warehouseAssignmentTarget) bool {
+	return audit != nil && audit.Status == "succeeded" && audit.LogisticsCarrier == oms.AutoMatchCarrier &&
+		strings.EqualFold(strings.TrimSpace(audit.OMSAccount), target.account) &&
+		strings.EqualFold(strings.TrimSpace(audit.WarehouseCode), strings.TrimSpace(target.mapping.OMSWarehouseCode)) &&
+		strings.EqualFold(strings.TrimSpace(audit.OMSOrderNo), strings.TrimSpace(target.order.OMSOrderNo))
 }
 
 func validateWarehouseAssignmentSource(shipment model.Shipment, mapping model.WarehouseMapping, lookup oms.PlatformOrderLookup) error {

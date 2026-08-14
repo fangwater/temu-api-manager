@@ -1362,7 +1362,7 @@ function renderShipments() {
 }
 
 const omsPlatformOrderStatusMeta = Object.freeze({
-  0: { label: "待处理", caption: "等待领星匹配并推进订单", tone: "pending" },
+  0: { label: "待处理", caption: "后台正在自动分配仓库与物流", tone: "pending" },
   1: { label: "待获取平台面单", caption: "等待领星获取平台面单", tone: "pending" },
   2: { label: "处理中", caption: "领星已确认，校验通过后自动归档", tone: "" },
   3: { label: "已发货", caption: "领星已发货，校验通过后自动归档", tone: "" },
@@ -1413,7 +1413,7 @@ function renderOMSPlatformOrders() {
     const fulfillmentDetail = order.automatic_fulfillment
       ? labelReadyDuration === null ? "面单成功时间未记录" : `面单处理成功至今 ${labelReadyDuration}`
       : "";
-    const assignmentAction = status === 0 ? `<button class="row-action assignment-row-action" type="button" data-assign-order="${escapeHtml(order.platform_order_sn)}" title="分配仓库和物流"><svg><use href="#i-truck"/></svg><span>分配物流</span></button>` : "-";
+    const assignmentAction = status === 0 ? '<span class="status-badge pending">后台自动匹配</span>' : "-";
     return `<tr>
       <td><div class="order-id"><strong>${escapeHtml(order.platform_order_sn)}</strong><small>${escapeHtml(order.tracking_number || "暂无跟踪号")}</small></div></td>
       <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${missing ? "未检索到同号平台订单" : escapeHtml(order.audit_time || "尚未审核")}</small></div></td>

@@ -39,7 +39,28 @@ func (s *Service) reconcileOMSPlatformOrder(ctx context.Context, shipment model.
 	}
 
 	decision := decideOMSPlatformOrder(expected, opposite, mapping.OMSWarehouseCode, shipment.ConfirmedAt, time.Now())
-	summary := omsPlatformOrderSummary(mapping, expected, opposite, decision)
+	assignment := omsWarehouseAssignmentAuditFromShipment(shipment)
+	if decision.State == "pending" {
+		var assigned bool
+		assignment, assigned, err = s.assignPendingOMSPlatformOrder(ctx, shipment, mapping, expected, assignment)
+		if err != nil {
+			decision.Message = "领星待处理，仓库物流自动分配失败，等待后台重试：" + err.Error()
+			summary := omsPlatformOrderSummary(mapping, expected, opposite, decision, assignment)
+			if updateErr := s.store.UpdateOMSSync(ctx, shipment.ID, "waiting_sync", nil, shipment.TrackingNumber, summary, decision.Message); updateErr != nil {
+				return shipment, errors.Join(err, updateErr)
+			}
+			updated, refreshErr := s.store.GetShipment(ctx, shipment.ID)
+			if refreshErr != nil {
+				return shipment, errors.Join(err, refreshErr)
+			}
+			return updated, fmt.Errorf("自动分配领星仓库物流: %w", err)
+		}
+		decision.Message = "领星仓库物流已自动分配，等待状态推进"
+		if assigned && s.logger != nil {
+			s.logger.Info("OMS pending order warehouse and logistics assigned automatically", "shipment_id", shipment.ID, "oms_account", expectedAccount)
+		}
+	}
+	summary := omsPlatformOrderSummary(mapping, expected, opposite, decision, assignment)
 	switch {
 	case decision.Verified:
 		if err := s.store.UpdateOMSSync(ctx, shipment.ID, "verified", nil, shipment.TrackingNumber, summary, ""); err != nil {
@@ -150,7 +171,12 @@ func normalizeOMSAccount(value string) (string, bool) {
 	}
 }
 
-func omsPlatformOrderSummary(mapping model.WarehouseMapping, expected, opposite oms.PlatformOrderLookup, decision omsPlatformOrderDecision) json.RawMessage {
+func omsPlatformOrderSummary(
+	mapping model.WarehouseMapping,
+	expected, opposite oms.PlatformOrderLookup,
+	decision omsPlatformOrderDecision,
+	assignment *omsWarehouseAssignmentAudit,
+) json.RawMessage {
 	type orderSummary struct {
 		OMSOrderNo        string `json:"oms_order_no,omitempty"`
 		Status            int    `json:"status"`
@@ -180,17 +206,42 @@ func omsPlatformOrderSummary(mapping model.WarehouseMapping, expected, opposite 
 			"match_count": len(opposite.Orders), "orders": summarize(opposite),
 		},
 	}
+	if assignment != nil {
+		summary["warehouse_assignment"] = assignment
+	}
 	raw, _ := json.Marshal(summary)
 	return raw
 }
 
+func omsWarehouseAssignmentAuditFromShipment(shipment model.Shipment) *omsWarehouseAssignmentAudit {
+	if shipment.OMSSync == nil || len(shipment.OMSSync.Summary) == 0 {
+		return nil
+	}
+	var summary struct {
+		WarehouseAssignment *omsWarehouseAssignmentAudit `json:"warehouse_assignment"`
+	}
+	if err := json.Unmarshal(shipment.OMSSync.Summary, &summary); err != nil {
+		return nil
+	}
+	return summary.WarehouseAssignment
+}
+
 func (s *Service) failOMSPlatformOrderQuery(ctx context.Context, shipment model.Shipment, mapping model.WarehouseMapping, cause error) (model.Shipment, error) {
-	summary, _ := json.Marshal(map[string]any{
-		"source": "oms_platform_order", "warehouse_key": mapping.OMSKey,
-		"warehouse_code": mapping.OMSWarehouseCode, "configured_account": mapping.OMSAccount,
-	})
+	summary := omsPlatformOrderFailureSummary(shipment, mapping)
 	_ = s.store.UpdateOMSSync(context.WithoutCancel(ctx), shipment.ID, "failed", nil, shipment.TrackingNumber, summary, cause.Error())
 	return shipment, cause
+}
+
+func omsPlatformOrderFailureSummary(shipment model.Shipment, mapping model.WarehouseMapping) json.RawMessage {
+	summary := map[string]any{
+		"source": "oms_platform_order", "warehouse_key": mapping.OMSKey,
+		"warehouse_code": mapping.OMSWarehouseCode, "configured_account": mapping.OMSAccount,
+	}
+	if assignment := omsWarehouseAssignmentAuditFromShipment(shipment); assignment != nil {
+		summary["warehouse_assignment"] = assignment
+	}
+	raw, _ := json.Marshal(summary)
+	return raw
 }
 
 func autoFulfillmentOMSFailureStatus(err error) string {
