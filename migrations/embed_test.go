@@ -17,7 +17,14 @@ func TestInitSQLUpgradesTemuProductIDsToBigint(t *testing.T) {
 }
 
 func TestInitSQLIncludesOrderDetailAndManualReviewStorage(t *testing.T) {
-	for _, table := range []string{"temu_order_details", "detail_payload jsonb NOT NULL", "temu_order_manual_reviews"} {
+	for _, table := range []string{
+		"temu_order_details",
+		"detail_payload jsonb NOT NULL",
+		"temu_order_manual_reviews",
+		"outcome IN ('', 'manually_fulfilled', 'cancelled', 'not_required', 'other')",
+		"note text NOT NULL",
+		"resolved_at timestamptz",
+	} {
 		if !strings.Contains(InitSQL, table) {
 			t.Fatalf("InitSQL is missing %q", table)
 		}

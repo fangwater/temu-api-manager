@@ -175,12 +175,15 @@ func TestWriteManualOrdersCSVExpandsOrderLines(t *testing.T) {
 	detectedAt := time.Date(2026, 8, 4, 10, 5, 0, 0, time.Local)
 	item := model.ManualReview{
 		ParentOrderSN: "PO-211-test",
-		Status:        "manual_pending",
+		Status:        "resolved",
+		Outcome:       "manually_fulfilled",
+		Note:          "等待仓库确认",
 		Reasons:       []string{"inventory_rule"},
 		Details:       []string{"美东库存低于安全线"},
 		MergeOrderSNs: []string{"PO-211-merge"},
 		DetectedAt:    detectedAt,
 		UpdatedAt:     detectedAt,
+		ResolvedAt:    &detectedAt,
 		Lines: []model.OrderLine{
 			{OrderSN: "211-a", ExtCode: "SKU-A", Quantity: 1, GoodsName: "Item A"},
 			{OrderSN: "211-b", ExtCode: "SKU-B", Quantity: 2, GoodsName: "Item B"},
@@ -198,11 +201,17 @@ func TestWriteManualOrdersCSVExpandsOrderLines(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("got %d rows, want header plus two order lines", len(rows))
 	}
-	if rows[1][0] != "PANDA BUY" || rows[1][3] != "人工处理中" || rows[1][4] != "库存安全线不足" || rows[1][6] != "SKU-A" {
+	if rows[1][0] != "PANDA BUY" || rows[1][3] != "人工履约完成" || rows[1][4] != "已人工发货" || rows[1][5] != "等待仓库确认" || rows[1][6] != "库存安全线不足" || rows[1][8] != "SKU-A" || rows[1][14] == "" {
 		t.Fatalf("unexpected first export row: %#v", rows[1])
 	}
-	if rows[2][6] != "SKU-B" || rows[2][7] != "2" {
+	if rows[2][8] != "SKU-B" || rows[2][9] != "2" {
 		t.Fatalf("unexpected second export row: %#v", rows[2])
+	}
+}
+
+func TestManualOutcomeExportText(t *testing.T) {
+	if got := manualOutcomeExportText("manually_fulfilled"); got != "已人工发货" {
+		t.Fatalf("manual outcome = %q", got)
 	}
 }
 

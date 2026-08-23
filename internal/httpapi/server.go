@@ -255,7 +255,7 @@ func writeManualOrdersCSV(destination io.Writer, shopName string, items []model.
 		return err
 	}
 	writer := csv.NewWriter(destination)
-	if err := writer.Write([]string{"店铺", "PO单号", "子订单号", "人工状态", "分类", "原因详情", "仓库SKU", "数量", "商品名称", "规格", "合并订单", "识别时间", "更新时间"}); err != nil {
+	if err := writer.Write([]string{"店铺", "PO单号", "子订单号", "人工状态", "处理结果", "备注", "分类", "原因详情", "仓库SKU", "数量", "商品名称", "规格", "合并订单", "识别时间", "完成时间", "更新时间"}); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -268,11 +268,17 @@ func writeManualOrdersCSV(destination io.Writer, shopName string, items []model.
 			reasons = append(reasons, manualReasonExportText(reason))
 		}
 		for _, line := range lines {
+			resolvedAt := ""
+			if item.ResolvedAt != nil {
+				resolvedAt = item.ResolvedAt.In(time.Local).Format("2006-01-02 15:04:05")
+			}
 			row := []string{
 				shopName,
 				item.ParentOrderSN,
 				line.OrderSN,
 				manualStatusExportText(item.Status),
+				manualOutcomeExportText(item.Outcome),
+				item.Note,
 				strings.Join(reasons, "；"),
 				strings.Join(item.Details, "；"),
 				line.ExtCode,
@@ -281,6 +287,7 @@ func writeManualOrdersCSV(destination io.Writer, shopName string, items []model.
 				line.Spec,
 				strings.Join(item.MergeOrderSNs, "；"),
 				item.DetectedAt.In(time.Local).Format("2006-01-02 15:04:05"),
+				resolvedAt,
 				item.UpdatedAt.In(time.Local).Format("2006-01-02 15:04:05"),
 			}
 			if err := writer.Write(row); err != nil {
@@ -314,7 +321,7 @@ func manualStatusExportText(status string) string {
 		"detected":       "待转人工",
 		"manual_pending": "人工处理中",
 		"approved":       "已批准自动发货",
-		"resolved":       "已结束",
+		"resolved":       "人工履约完成",
 	}
 	if label := labels[status]; label != "" {
 		return label
@@ -322,16 +329,31 @@ func manualStatusExportText(status string) string {
 	return status
 }
 
+func manualOutcomeExportText(outcome string) string {
+	labels := map[string]string{
+		"manually_fulfilled": "已人工发货",
+		"cancelled":          "订单已取消",
+		"not_required":       "无需履约",
+		"other":              "其他已处理",
+	}
+	if label := labels[outcome]; label != "" {
+		return label
+	}
+	return outcome
+}
+
 func (s *Server) updateManualOrder(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Status string `json:"status"`
+		Status  string `json:"status"`
+		Outcome string `json:"outcome"`
+		Note    string `json:"note"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	ctx, cancel := s.context(r)
 	defer cancel()
-	item, err := s.service.UpdateManualReview(ctx, r.PathValue("parentOrderSN"), input.Status)
+	item, err := s.service.UpdateManualReview(ctx, r.PathValue("parentOrderSN"), input.Status, input.Outcome, input.Note)
 	if err != nil {
 		s.fail(w, err)
 		return

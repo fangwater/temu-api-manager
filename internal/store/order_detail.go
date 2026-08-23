@@ -108,7 +108,7 @@ func (p *Postgres) attachManualReviews(ctx context.Context, orders []model.Order
 	}
 	ids, indexes := orderIndexes(orders)
 	rows, err := p.pool.Query(ctx, `
-		SELECT parent_order_sn,reasons,merge_order_sn_list,status,active,detected_at,updated_at,approved_at
+		SELECT parent_order_sn,reasons,merge_order_sn_list,status,outcome,note,active,detected_at,updated_at,approved_at,resolved_at
 		FROM temu_order_manual_reviews WHERE parent_order_sn=ANY($1)
 	`, ids)
 	if err != nil {
@@ -138,14 +138,18 @@ func orderIndexes(orders []model.Order) ([]string, map[string]int) {
 func scanManualReview(row pgx.Row) (model.ManualReview, error) {
 	var item model.ManualReview
 	err := row.Scan(&item.ParentOrderSN, &item.Reasons, &item.MergeOrderSNs, &item.Status,
-		&item.Active, &item.DetectedAt, &item.UpdatedAt, &item.ApprovedAt)
+		&item.Outcome, &item.Note, &item.Active, &item.DetectedAt, &item.UpdatedAt, &item.ApprovedAt, &item.ResolvedAt)
 	return item, err
 }
 
 func manualReviewWhere(status, query string) (string, []any) {
+	status = strings.TrimSpace(status)
 	where := "WHERE m.active"
+	if status == "resolved" {
+		where = "WHERE NOT m.active AND m.status='resolved' AND m.outcome<>''"
+	}
 	args := []any{}
-	if status = strings.TrimSpace(status); status != "" {
+	if status != "" {
 		args = append(args, status)
 		where += fmt.Sprintf(" AND m.status=$%d", len(args))
 	}
@@ -154,6 +158,7 @@ func manualReviewWhere(status, query string) (string, []any) {
 		position := len(args)
 		where += fmt.Sprintf(` AND (
 			m.parent_order_sn ILIKE $%[1]d
+			OR m.note ILIKE $%[1]d
 			OR EXISTS (
 				SELECT 1 FROM temu_order_lines l
 				WHERE l.parent_order_sn=m.parent_order_sn
@@ -184,7 +189,7 @@ func (p *Postgres) ListManualReviews(ctx context.Context, status, query string, 
 	limitPosition := len(args) + 1
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := p.pool.Query(ctx, fmt.Sprintf(`
-		SELECT m.parent_order_sn,m.reasons,m.merge_order_sn_list,m.status,m.active,m.detected_at,m.updated_at,m.approved_at
+		SELECT m.parent_order_sn,m.reasons,m.merge_order_sn_list,m.status,m.outcome,m.note,m.active,m.detected_at,m.updated_at,m.approved_at,m.resolved_at
 		FROM temu_order_manual_reviews m %s ORDER BY m.updated_at DESC LIMIT $%d OFFSET $%d
 	`, where, limitPosition, limitPosition+1), args...)
 	if err != nil {
@@ -250,7 +255,8 @@ func (p *Postgres) UpsertManualReview(ctx context.Context, review model.ManualRe
 																																																																																										approved_at=CASE
 																																																																																														WHEN EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
 																																																																																																			OR (temu_order_manual_reviews.active AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
-																																																																																																							THEN NULL ELSE temu_order_manual_reviews.approved_at END
+																																		THEN NULL ELSE temu_order_manual_reviews.approved_at END
+																																		WHERE NOT (temu_order_manual_reviews.status='resolved' AND temu_order_manual_reviews.outcome<>'')
 																																																																																																								`, review.ParentOrderSN, review.Reasons, review.MergeOrderSNs)
 	return err
 }
@@ -264,21 +270,28 @@ func (p *Postgres) ClearManualReviewReason(ctx context.Context, parentOrderSN, r
 				WHEN status='approved' THEN 'manual_pending'
 				ELSE status END,
 			approved_at=NULL,updated_at=now()
-		WHERE parent_order_sn=$1 AND $2=ANY(reasons)
+		WHERE parent_order_sn=$1 AND $2=ANY(reasons) AND NOT (status='resolved' AND outcome<>'')
 	`, strings.TrimSpace(parentOrderSN), strings.TrimSpace(reason))
 	return err
 }
 
-func (p *Postgres) UpdateManualReview(ctx context.Context, parentOrderSN, status string) (model.ManualReview, error) {
+func (p *Postgres) UpdateManualReview(ctx context.Context, parentOrderSN, status, outcome, note string) (model.ManualReview, error) {
 	if status != "manual_pending" && status != "approved" && status != "resolved" {
 		return model.ManualReview{}, errors.New("invalid manual review status")
 	}
+	outcome = strings.TrimSpace(outcome)
+	note = strings.TrimSpace(note)
 	item, err := scanManualReview(p.pool.QueryRow(ctx, `
 		UPDATE temu_order_manual_reviews SET status=$2,active=($2<>'resolved'),updated_at=now(),
-			approved_at=CASE WHEN $2='approved' THEN now() ELSE NULL END
+			approved_at=CASE WHEN $2='approved' THEN now() ELSE NULL END,
+			outcome=CASE WHEN $2='resolved' THEN $3 ELSE '' END,
+			note=CASE WHEN $2='resolved' THEN $4 ELSE '' END,
+			resolved_at=CASE WHEN $2='resolved' THEN now() ELSE NULL END
 		WHERE parent_order_sn=$1
-		RETURNING parent_order_sn,reasons,merge_order_sn_list,status,active,detected_at,updated_at,approved_at
-	`, strings.TrimSpace(parentOrderSN), status))
+		  AND CASE WHEN $2='resolved' THEN active AND status='manual_pending'
+		           ELSE NOT (status='resolved' AND outcome<>'') END
+		RETURNING parent_order_sn,reasons,merge_order_sn_list,status,outcome,note,active,detected_at,updated_at,approved_at,resolved_at
+	`, strings.TrimSpace(parentOrderSN), status, outcome, note))
 	if err != nil {
 		return item, err
 	}
@@ -299,8 +312,13 @@ func (p *Postgres) ListWarehouseClassificationCandidates(ctx context.Context, li
         SELECT o.parent_order_sn
         FROM temu_orders o
         LEFT JOIN temu_order_warehouse_checks warehouse_check ON warehouse_check.parent_order_sn=o.parent_order_sn
-        WHERE o.is_open AND o.parent_order_status=2
-          AND NOT EXISTS (SELECT 1 FROM temu_shipment_orders queued WHERE queued.parent_order_sn=o.parent_order_sn)
+		WHERE o.is_open AND o.parent_order_status=2
+		  AND NOT EXISTS (SELECT 1 FROM temu_shipment_orders queued WHERE queued.parent_order_sn=o.parent_order_sn)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM temu_order_manual_reviews completed
+		    WHERE completed.parent_order_sn=o.parent_order_sn
+		      AND completed.status='resolved' AND completed.outcome<>''
+		  )
           AND NOT EXISTS (
             SELECT 1 FROM temu_order_manual_reviews manual
             WHERE manual.parent_order_sn=o.parent_order_sn AND manual.active AND manual.status<>'approved'

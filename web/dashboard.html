@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260813-6" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260823-1" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -178,7 +178,7 @@
             <div class="page-head"><div><h1>人工订单</h1><p>库存安全线不足、SKU 未绑定、一单多件与 Temu 合并候选集中在此处理</p></div><div class="page-actions"><button class="secondary-button" id="export-manual"><svg><use href="#i-download"/></svg>批量导出 CSV</button><button class="secondary-button" id="refresh-manual"><svg><use href="#i-refresh"/></svg>刷新</button></div></div>
             <div class="toolbar manual-toolbar">
               <label class="search"><svg><use href="#i-search"/></svg><input id="manual-search" type="search" placeholder="搜索订单号、SKU 或商品名称" /></label>
-              <label><select id="manual-status"><option value="">全部处理中</option><option value="detected">待转人工</option><option value="manual_pending">人工处理中</option><option value="approved">已批准自动发货</option></select></label>
+              <label><select id="manual-status"><option value="">全部处理中</option><option value="detected">待转人工</option><option value="manual_pending">人工处理中</option><option value="approved">已批准自动发货</option><option value="resolved">人工履约记录</option></select></label>
               <span class="table-note" id="manual-total">共 0 条</span>
             </div>
             <div class="table-shell">
@@ -346,7 +346,17 @@
     <dialog class="key-dialog" id="key-dialog">
       <form id="key-form"><div class="key-icon"><svg><use href="#i-key"/></svg></div><h2>确认敏感操作</h2><p id="key-purpose">请输入操作密钥</p><label><span>操作密钥</span><input id="operation-key" type="password" autocomplete="off" required /></label><div class="dialog-actions"><button type="button" class="secondary-button" id="key-cancel">取消</button><button type="submit" class="primary-button">继续</button></div></form>
     </dialog>
+    <dialog class="key-dialog manual-resolution-dialog" id="manual-resolution-dialog">
+      <form id="manual-resolution-form">
+        <div class="key-icon"><svg><use href="#i-check"/></svg></div>
+        <h2>完成人工履约</h2>
+        <p id="manual-resolution-order">请选择人工处理后的订单状态</p>
+        <label><span>处理结果</span><select id="manual-resolution-outcome" required><option value="">请选择</option><option value="manually_fulfilled">已人工发货</option><option value="cancelled">订单已取消</option><option value="not_required">无需履约</option><option value="other">其他已处理</option></select></label>
+        <label><span>备注（可选）</span><textarea id="manual-resolution-note" maxlength="1000" rows="4" placeholder="记录人工处理方式或需要后续查询的信息"></textarea></label>
+        <div class="dialog-actions"><button type="button" class="secondary-button" id="manual-resolution-cancel">取消</button><button type="submit" class="primary-button"><svg><use href="#i-check"/></svg>确认完成</button></div>
+      </form>
+    </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260814-1" defer></script>
+    <script src="./dashboard.js?v=20260823-1" defer></script>
   </body>
 </html>

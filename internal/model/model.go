@@ -78,10 +78,13 @@ type ManualReview struct {
 	Reasons       []string     `json:"reasons"`
 	MergeOrderSNs []string     `json:"merge_order_sns,omitempty"`
 	Status        string       `json:"status"`
+	Outcome       string       `json:"outcome,omitempty"`
+	Note          string       `json:"note,omitempty"`
 	Active        bool         `json:"active"`
 	DetectedAt    time.Time    `json:"detected_at"`
 	UpdatedAt     time.Time    `json:"updated_at"`
 	ApprovedAt    *time.Time   `json:"approved_at,omitempty"`
+	ResolvedAt    *time.Time   `json:"resolved_at,omitempty"`
 	Lines         []OrderLine  `json:"lines,omitempty"`
 	Detail        *OrderDetail `json:"detail,omitempty"`
 	Details       []string     `json:"details,omitempty"`

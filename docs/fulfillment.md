@@ -81,6 +81,13 @@ GET    /api/shipments/{id}/label
 POST   /api/shipments/{id}/confirm
 ```
 
+An operator moves a detected review to `manual_pending` before handling it. To
+complete manual fulfillment, update the review to `resolved` with an `outcome`
+of `manually_fulfilled`, `cancelled`, `not_required`, or `other`; `note` is
+optional and limited to 1000 characters. Completed reviews are returned by
+`GET /api/manual-orders?status=resolved`, remain searchable and exportable, and
+are excluded from warehouse classification and automatic-fulfillment work.
+
 Package tracking calls `temu.track.trackinginfo.get`. The `language` query
 parameter is optional. The response includes the Temu package number, the
 last-mile `trackingNum`, and `trackingInfo` events with

@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS temu_order_manual_reviews (
     approved_at timestamptz
 );
 
+ALTER TABLE temu_order_manual_reviews
+    ADD COLUMN IF NOT EXISTS outcome text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS note text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+
+ALTER TABLE temu_order_manual_reviews
+    DROP CONSTRAINT IF EXISTS temu_order_manual_reviews_outcome_check,
+    ADD CONSTRAINT temu_order_manual_reviews_outcome_check CHECK (
+        outcome IN ('', 'manually_fulfilled', 'cancelled', 'not_required', 'other')
+    );
+
 CREATE INDEX IF NOT EXISTS temu_order_manual_reviews_queue_idx
     ON temu_order_manual_reviews(active, status, updated_at DESC);
 

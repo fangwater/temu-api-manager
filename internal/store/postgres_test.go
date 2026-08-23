@@ -95,6 +95,7 @@ func TestManualReviewWhereSupportsStatusAndSearch(t *testing.T) {
 	for _, fragment := range []string{
 		"m.status=$1",
 		"m.parent_order_sn ILIKE $2",
+		"m.note ILIKE $2",
 		"l.order_sn ILIKE $2",
 		"l.ext_code ILIKE $2",
 		"l.goods_name ILIKE $2",
@@ -114,6 +115,11 @@ func TestManualReviewWhereSupportsStatusAndSearch(t *testing.T) {
 	where, args = manualReviewWhere("", "  ")
 	if where != "WHERE m.active" || len(args) != 0 {
 		t.Fatalf("unexpected empty filter: where=%q args=%#v", where, args)
+	}
+
+	where, args = manualReviewWhere("resolved", "")
+	if len(args) != 1 || args[0] != "resolved" || !strings.Contains(where, "NOT m.active") || !strings.Contains(where, "m.outcome<>''") {
+		t.Fatalf("unexpected resolved filter: where=%q args=%#v", where, args)
 	}
 }
 

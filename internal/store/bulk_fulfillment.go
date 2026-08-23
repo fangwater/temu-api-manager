@@ -43,8 +43,9 @@ func (p *Postgres) CreateBulkFulfillmentBatch(ctx context.Context, batchID strin
 		  )
 		  AND NOT EXISTS (
 			SELECT 1 FROM temu_order_manual_reviews manual
-			WHERE manual.parent_order_sn=o.parent_order_sn AND manual.active
-			  AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
+			WHERE manual.parent_order_sn=o.parent_order_sn
+			  AND ((manual.status='resolved' AND manual.outcome<>'') OR
+			       (manual.active AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])))
 		  )
 		ORDER BY o.expect_ship_latest_time NULLS LAST,o.update_time,o.parent_order_sn
 		FOR UPDATE OF o

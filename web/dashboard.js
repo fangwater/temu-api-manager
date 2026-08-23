@@ -454,7 +454,11 @@ function manualReasonText(reason) {
   }
 
 function manualStatusText(status) {
-  return ({ detected: "待转人工", manual_pending: "人工处理中", approved: "已批准自动发货", resolved: "已结束" })[status] || status;
+  return ({ detected: "待转人工", manual_pending: "人工处理中", approved: "已批准自动发货", resolved: "人工履约完成" })[status] || status;
+}
+
+function manualOutcomeText(outcome) {
+  return ({ manually_fulfilled: "已人工发货", cancelled: "订单已取消", not_required: "无需履约", other: "其他已处理" })[outcome] || outcome;
 }
 
 async function loadManualOrders(focusOrder = "") {
@@ -538,24 +542,29 @@ function renderManualOrders(focusOrder = "") {
 					        else if (packageIncomplete) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验包裹数据</button>`;
 						    else if (inventoryRule) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验库存</button>`;
 						        else if (item.status === "detected") actions = `<button class="row-action" data-manual-action="manual_pending" data-manual-order="${escapeHtml(item.parent_order_sn)}">转人工处理</button>`;
-							    else if (item.status === "approved") actions = `<button class="row-action" data-manual-action="manual_pending" data-manual-order="${escapeHtml(item.parent_order_sn)}">重新转人工</button>`;
+							        else if (item.status === "approved") actions = `<button class="row-action" data-manual-action="manual_pending" data-manual-order="${escapeHtml(item.parent_order_sn)}">重新转人工</button>`;
+								if (item.status === "manual_pending") actions += `<button class="row-action manual-complete-action" data-complete-manual="${escapeHtml(item.parent_order_sn)}">完成人工履约</button>`;
+								if (item.status === "resolved") actions = "-";
+								const resolution = item.status === "resolved" ? `<div class="manual-resolution-summary"><strong>${escapeHtml(manualOutcomeText(item.outcome))}</strong>${item.note ? `<span>${escapeHtml(item.note)}</span>` : ""}${item.resolved_at ? `<small>完成 ${formatTime(item.resolved_at)}</small>` : ""}</div>` : "";
 							        return `<tr ${focusOrder === item.parent_order_sn ? 'class="focused-row"' : ""}>
 								      <td><div class="order-id"><strong>${escapeHtml(item.parent_order_sn)}</strong><small>识别 ${formatTime(item.detected_at)}</small></div></td>
 								            <td><div class="classification-stack">${reasons || "-"}</div>${details ? `<div class="manual-detail-list">${details}</div>` : ""}</td>
 									          <td><div class="sku-stack">${lines || "-"}</div></td>
 										        <td class="merge-orders">${mergeOrders}</td>
-											      <td><span class="status-badge ${item.status === "approved" ? "" : "pending"}">${manualStatusText(item.status)}</span></td>
+										      <td><span class="status-badge ${item.status === "approved" || item.status === "resolved" ? "" : "pending"}">${manualStatusText(item.status)}</span>${resolution}</td>
 											            <td><div class="manual-actions">${actions}</div></td>
 												        </tr>`;
 													  }).join("");
-													    $("#manual-empty").hidden = items.length > 0;
+    $("#manual-empty").hidden = items.length > 0;
     const searching = Boolean($("#manual-search").value.trim());
-    $("#manual-empty strong").textContent = searching ? "没有匹配的人工订单" : "没有待人工订单";
-    $("#manual-empty span").textContent = searching ? "请尝试其他订单号、SKU 或商品名称" : "同步后识别的一单多件与合并候选会显示在这里";
+    const viewingResolved = $("#manual-status").value === "resolved";
+    $("#manual-empty strong").textContent = searching ? "没有匹配的人工订单" : (viewingResolved ? "没有人工履约记录" : "没有待人工订单");
+    $("#manual-empty span").textContent = searching ? "请尝试其他订单号、SKU、商品名称或备注" : (viewingResolved ? "完成人工履约的订单会保留在这里" : "同步后识别的一单多件与合并候选会显示在这里");
       $("#manual-total").textContent = `共 ${state.manualMeta.total ?? items.length} 条`;
-        $("#nav-manual-count").textContent = state.manualMeta.total ?? items.length;
+        if (!$("#manual-status").value) $("#nav-manual-count").textContent = state.manualMeta.total ?? items.length;
         renderPager("#manual-pager", state.manualMeta, "manual", loadManualOrders);
-														  $$('[data-manual-action]').forEach((button) => button.addEventListener("click", () => updateManualOrder(button.dataset.manualOrder, button.dataset.manualAction)));
+																  $$('[data-manual-action]').forEach((button) => button.addEventListener("click", () => updateManualOrder(button.dataset.manualOrder, button.dataset.manualAction)));
+																  $$('[data-complete-manual]').forEach((button) => button.addEventListener("click", () => openManualResolution(button.dataset.completeManual)));
 														    $$('[data-recheck-warehouse]').forEach((button) => button.addEventListener("click", () => recheckWarehouseEligibility(button.dataset.recheckWarehouse, button)));
 														    }
 
@@ -585,6 +594,39 @@ async function updateManualOrder(parentOrderSN, status) {
     toast(status === "manual_pending" ? "订单已转入人工处理" : "订单已批准进入自动发货");
     await Promise.all([loadManualOrders(parentOrderSN), loadOrders(), loadShipments(), loadBulkFulfillment()]);
   } catch (error) { if (error.status === 401) forgetOperationKey(); toast(error.message, true); }
+}
+
+function openManualResolution(parentOrderSN) {
+  state.manualResolutionOrder = parentOrderSN;
+  $("#manual-resolution-form").reset();
+  $("#manual-resolution-order").textContent = `订单 ${parentOrderSN}`;
+  $("#manual-resolution-dialog").showModal();
+}
+
+async function completeManualResolution(event) {
+  event.preventDefault();
+  const parentOrderSN = state.manualResolutionOrder;
+  const outcome = $("#manual-resolution-outcome").value;
+  const note = $("#manual-resolution-note").value.trim();
+  const operationKey = await requireOperationKey(`确认订单 ${parentOrderSN} 的人工履约结果`);
+  if (!operationKey) return;
+  const button = event.submitter;
+  setLoading(button, true);
+  try {
+    await api(`/orders/${encodeURIComponent(parentOrderSN)}/manual-review`, {
+      method: "PUT",
+      sensitive: true,
+      body: JSON.stringify({ status: "resolved", outcome, note }),
+    });
+    $("#manual-resolution-dialog").close();
+    toast("人工履约结果已保存");
+    await Promise.all([loadManualOrders(), loadOrders(), loadBulkFulfillment()]);
+  } catch (error) {
+    if (error.status === 401) forgetOperationKey();
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
 }
 
 async function loadWarehouses(sync = false) {
@@ -1856,6 +1898,8 @@ $("#quote-form").addEventListener("submit", (event) => { event.preventDefault();
 $("#purchase-button").addEventListener("click", purchaseLabel);
 $("#manual-status").addEventListener("change", () => { state.pages.manual = 1; loadManualOrders(); });
 $("#manual-search").addEventListener("input", () => { state.pages.manual = 1; clearTimeout(state.manualSearchTimer); state.manualSearchTimer = setTimeout(loadManualOrders, 250); });
+$("#manual-resolution-form").addEventListener("submit", completeManualResolution);
+$("#manual-resolution-cancel").addEventListener("click", () => $("#manual-resolution-dialog").close());
 $("#refresh-labels").addEventListener("click", () => loadShipmentQueue("labels"));
 $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exceptions"));
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));

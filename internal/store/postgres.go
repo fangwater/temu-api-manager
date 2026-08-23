@@ -163,7 +163,8 @@ func (p *Postgres) ReplaceOpenOrders(ctx context.Context, orders []model.Order, 
 																																																																																																																																		WHEN temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
 																																																																																																																																								OR EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[] THEN NULL
 																																																																																																																																													WHEN temu_order_manual_reviews.status='approved'
-																																																																																																																																																		THEN temu_order_manual_reviews.approved_at ELSE NULL END
+																																												THEN temu_order_manual_reviews.approved_at ELSE NULL END
+																																												WHERE NOT (temu_order_manual_reviews.status='resolved' AND temu_order_manual_reviews.outcome<>'')
 																																																																																																																																																					`, order.ParentOrderSN, review.Reasons, review.MergeOrderSNs); err != nil {
 				return 0, fmt.Errorf("upsert manual review %s: %w", order.ParentOrderSN, err)
 			}
@@ -218,8 +219,9 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
         )
         AND NOT EXISTS (
             SELECT 1 FROM temu_order_manual_reviews manual
-            WHERE manual.parent_order_sn=o.parent_order_sn AND manual.active
-              AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','shop_sku_warehouse_restriction','delivery_address_unsupported']::text[])
+			WHERE manual.parent_order_sn=o.parent_order_sn
+			  AND ((manual.status='resolved' AND manual.outcome<>'') OR
+			       (manual.active AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','shop_sku_warehouse_restriction','delivery_address_unsupported']::text[])))
         )`
 	}
 	args := []any{}

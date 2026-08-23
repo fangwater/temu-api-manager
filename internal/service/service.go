@@ -476,7 +476,7 @@ func (s *Service) persistWarehouseClassification(ctx context.Context, order mode
 	if err := s.store.UpsertManualReview(ctx, *review); err != nil {
 		return fmt.Errorf("persist manual warehouse classification for %s: %w", order.ParentOrderSN, err)
 	}
-	if _, err := s.store.UpdateManualReview(ctx, order.ParentOrderSN, "manual_pending"); err != nil {
+	if _, err := s.store.UpdateManualReview(ctx, order.ParentOrderSN, "manual_pending", "", ""); err != nil {
 		return fmt.Errorf("move %s to manual queue: %w", order.ParentOrderSN, err)
 	}
 	return nil
@@ -504,7 +504,7 @@ func (s *Service) addManualReviewReason(ctx context.Context, parentOrderSN, reas
 	if err := s.store.UpsertManualReview(ctx, *review); err != nil {
 		return err
 	}
-	_, err = s.store.UpdateManualReview(ctx, parentOrderSN, "manual_pending")
+	_, err = s.store.UpdateManualReview(ctx, parentOrderSN, "manual_pending", "", "")
 	return err
 }
 
@@ -531,11 +531,28 @@ func (s *Service) ListAllManualReviews(ctx context.Context, status, query string
 	}
 }
 
-func (s *Service) UpdateManualReview(ctx context.Context, parent, status string) (model.ManualReview, error) {
+func (s *Service) UpdateManualReview(ctx context.Context, parent, status, outcome, note string) (model.ManualReview, error) {
 	if status != "manual_pending" && status != "approved" && status != "resolved" {
 		return model.ManualReview{}, errors.New("status must be manual_pending, approved, or resolved")
 	}
 	parent = strings.TrimSpace(parent)
+	outcome = strings.TrimSpace(outcome)
+	note = strings.TrimSpace(note)
+	if len([]rune(note)) > 1000 {
+		return model.ManualReview{}, errors.New("note must not exceed 1000 characters")
+	}
+	if status == "resolved" {
+		if !validManualReviewOutcome(outcome) {
+			return model.ManualReview{}, errors.New("outcome must be manually_fulfilled, cancelled, not_required, or other")
+		}
+		order, err := s.store.GetOrder(ctx, parent)
+		if err != nil {
+			return model.ManualReview{}, err
+		}
+		if order.ManualReview == nil || !order.ManualReview.Active || order.ManualReview.Status != "manual_pending" {
+			return model.ManualReview{}, errors.New("only an order currently in manual processing can be completed")
+		}
+	}
 	if status == "manual_pending" || status == "approved" {
 		order, err := s.RefreshOrderDetail(ctx, parent)
 		if err != nil {
@@ -561,7 +578,16 @@ func (s *Service) UpdateManualReview(ctx context.Context, parent, status string)
 			}
 		}
 	}
-	return s.store.UpdateManualReview(ctx, parent, status)
+	return s.store.UpdateManualReview(ctx, parent, status, outcome, note)
+}
+
+func validManualReviewOutcome(outcome string) bool {
+	switch outcome {
+	case "manually_fulfilled", "cancelled", "not_required", "other":
+		return true
+	default:
+		return false
+	}
 }
 func (s *Service) SyncWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
 	result, _, err := s.temu.Warehouses(ctx)
@@ -2907,8 +2933,13 @@ func hasActiveManualReason(order model.Order, reason string) bool {
 }
 
 func manualOrderReason(order model.Order) string {
-	if review := order.ManualReview; review != nil && review.Active && (review.Status != "approved" || hasBlockingWarehouseReason(review)) {
-		return "order is assigned to manual review: " + strings.Join(review.Reasons, ", ")
+	if review := order.ManualReview; review != nil {
+		if review.Status == "resolved" && review.Outcome != "" {
+			return "order manual fulfillment is already completed"
+		}
+		if review.Active && (review.Status != "approved" || hasBlockingWarehouseReason(review)) {
+			return "order is assigned to manual review: " + strings.Join(review.Reasons, ", ")
+		}
 	}
 	var labels []temu.NameValue
 	_ = json.Unmarshal(order.Labels, &labels)
