@@ -103,6 +103,63 @@ func TestResolvePackageSpecsUsesWarehouseManagerEndpoint(t *testing.T) {
 	}
 }
 
+func TestQueryForShopSendsShopIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/temu/warehouse-availability/query" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.Header.Get("X-Temu-Shop") != "panda-homes" {
+			t.Fatalf("X-Temu-Shop = %q", request.Header.Get("X-Temu-Shop"))
+		}
+		var payload struct {
+			Platform string `json:"platform"`
+			ShopCode string `json:"shop_code"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if payload.Platform != "temu" || payload.ShopCode != "panda-homes" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"complete":true,"records":[]}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	if _, err := client.QueryForShop(context.Background(), "temu", "panda-homes", map[string]int{"SKU-1": 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShopInventoryThresholdsUsesWarehouseManagerEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/inventory-thresholds/defaults" {
+			http.NotFound(writer, request)
+			return
+		}
+		if request.URL.Query().Get("platform") != "temu" || request.URL.Query().Get("shop") != "panda-buy" {
+			t.Fatalf("query = %s", request.URL.RawQuery)
+		}
+		if request.Header.Get("X-Temu-Shop") != "panda-buy" {
+			t.Fatalf("X-Temu-Shop = %q", request.Header.Get("X-Temu-Shop"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"platform":"temu","shop_code":"panda-buy","east_threshold":8,"west_threshold":9,"total_threshold":10,"customized":true}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	item, err := client.ShopInventoryThresholds(context.Background(), "temu", "panda-buy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ShopCode != "panda-buy" || item.EastThreshold != 8 || !item.Customized {
+		t.Fatalf("unexpected shop thresholds: %#v", item)
+	}
+}
+
 func TestUpdatePackageSpecForwardsExactWarehouseSKU(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPatch {

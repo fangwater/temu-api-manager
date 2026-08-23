@@ -4,7 +4,7 @@ const apiPath = (path) => `${basePath}/api${path}`;
 const defaultStore = { code: "panda-homes", name: "PANDA HOMES", default: true };
 const requestedShopCode = new URLSearchParams(window.location.search).get("shop");
 const savedShopCode = requestedShopCode || sessionStorage.getItem("temu_selected_shop") || defaultStore.code;
-const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
+const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1, inventoryThresholds: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
 state.omsPlatformOrders = [];
 state.omsPlatformOrderMeta = {};
 state.omsPlatformOrderRequestSequence = 0;
@@ -17,6 +17,9 @@ state.warehouseAssignmentSubmitting = false;
 state.carrierPolicies = [];
 state.skuWarehouseRules = [];
 state.skuRuleMeta = {};
+state.inventoryThresholds = [];
+state.inventoryThresholdMeta = {};
+state.shopInventoryThresholds = null;
 state.manualRequestSequence = 0;
 state.combinedShipmentGroups = [];
 state.combinedShipmentMeta = { total_groups: 0, total_orders: 0, queried_at: null, error: "" };
@@ -812,6 +815,130 @@ async function saveSKUWarehouseRule(warehouseSKU, button) {
     renderSKUWarehouseRules();
   } catch (error) {
     toast(error.message, true);
+    setLoading(button, false);
+  }
+}
+
+function inventoryThresholdSource(item) {
+  if (item.source === "shop_sku" || item.customized) return "店铺 SKU 单独设置";
+  if (item.source === "shop_default") return "店铺默认";
+  if (item.source === "legacy_sku") return "历史 SKU 覆盖";
+  return "店铺默认";
+}
+
+async function loadInventoryThresholds() {
+  const query = $("#inventory-threshold-search").value.trim();
+  const params = new URLSearchParams({ page: state.pages.inventoryThresholds, page_size: state.pageSize });
+  if (query) params.set("q", query);
+  try {
+    const response = await api(`/inventory-thresholds?${params}`);
+    state.inventoryThresholds = response.data || [];
+    state.inventoryThresholdMeta = response.meta || {};
+    state.shopInventoryThresholds = response.meta?.default_thresholds || state.shopInventoryThresholds;
+    if (adjustEmptyPage(state.inventoryThresholdMeta, "inventoryThresholds", loadInventoryThresholds)) return;
+    renderInventoryThresholds();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderInventoryThresholds() {
+  const defaults = state.shopInventoryThresholds || {};
+  $("#shop-east-threshold").value = defaults.east_threshold ?? "";
+  $("#shop-west-threshold").value = defaults.west_threshold ?? "";
+  $("#shop-total-threshold").value = defaults.total_threshold ?? "";
+  $("#shop-threshold-scope").textContent = `${state.store.name || state.store.code} 未单独设置 SKU 时使用`;
+  $("#reset-shop-thresholds").hidden = !defaults.customized;
+  $("#inventory-threshold-rows").innerHTML = state.inventoryThresholds.map((item) => `
+    <tr data-threshold-sku="${escapeHtml(item.warehouse_sku)}">
+      <td><div class="sku-rule-identity"><code>${escapeHtml(item.warehouse_sku)}</code><span>${escapeHtml(item.product_name || "未记录商品名称")}</span></div></td>
+      <td><input class="threshold-input" data-threshold-field="east_threshold" type="number" min="0" step="1" value="${escapeHtml(item.east_threshold)}"></td>
+      <td><input class="threshold-input" data-threshold-field="west_threshold" type="number" min="0" step="1" value="${escapeHtml(item.west_threshold)}"></td>
+      <td><input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="${escapeHtml(item.total_threshold)}"></td>
+      <td><span class="status-badge ${item.customized ? "pending" : "neutral"}">${escapeHtml(inventoryThresholdSource(item))}</span></td>
+      <td>
+        <div class="manual-actions">
+          <button class="secondary-button sku-rule-save" data-save-threshold="${escapeHtml(item.warehouse_sku)}"><svg><use href="#i-check"/></svg>保存</button>
+          ${item.customized ? `<button class="secondary-button" data-reset-threshold="${escapeHtml(item.warehouse_sku)}">恢复</button>` : ""}
+        </div>
+      </td>
+    </tr>
+  `).join("");
+  const total = Number(state.inventoryThresholdMeta.total || 0);
+  $("#inventory-threshold-total").textContent = `共 ${total} 个 SKU`;
+  $("#inventory-threshold-empty").hidden = state.inventoryThresholds.length > 0;
+  renderPager("#inventory-threshold-pager", state.inventoryThresholdMeta, "inventoryThresholds", loadInventoryThresholds);
+  $$("[data-save-threshold]").forEach((button) => button.addEventListener("click", () => saveSKUInventoryThreshold(button.dataset.saveThreshold, button)));
+  $$("[data-reset-threshold]").forEach((button) => button.addEventListener("click", () => resetSKUInventoryThreshold(button.dataset.resetThreshold, button)));
+}
+
+function thresholdPayloadFromForm(form) {
+  return {
+    east_threshold: Number(form.querySelector("#shop-east-threshold, [data-threshold-field='east_threshold']") ? (form.id === "shop-threshold-form" ? $("#shop-east-threshold").value : form.querySelector("[data-threshold-field='east_threshold']").value) : 0),
+    west_threshold: Number(form.id === "shop-threshold-form" ? $("#shop-west-threshold").value : form.querySelector("[data-threshold-field='west_threshold']").value),
+    total_threshold: Number(form.id === "shop-threshold-form" ? $("#shop-total-threshold").value : form.querySelector("[data-threshold-field='total_threshold']").value),
+  };
+}
+
+async function saveShopInventoryThresholds(event) {
+  event.preventDefault();
+  const button = event.submitter;
+  setLoading(button, true);
+  try {
+    const { data } = await api("/inventory-thresholds/defaults", { method: "PATCH", body: JSON.stringify(thresholdPayloadFromForm(event.currentTarget)) });
+    state.shopInventoryThresholds = data;
+    toast("当前店铺默认安全线已保存");
+    renderInventoryThresholds();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
+}
+
+async function resetShopInventoryThresholds(button) {
+  setLoading(button, true);
+  try {
+    const { data } = await api("/inventory-thresholds/defaults/reset", { method: "POST" });
+    state.shopInventoryThresholds = data;
+    toast("当前店铺已恢复仓库默认安全线");
+    await loadInventoryThresholds();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
+}
+
+async function saveSKUInventoryThreshold(warehouseSKU, button) {
+  const row = document.querySelector(`[data-threshold-sku="${CSS.escape(warehouseSKU)}"]`);
+  if (!row) return;
+  setLoading(button, true);
+  try {
+    const { data } = await api(`/inventory-thresholds/${encodeURIComponent(warehouseSKU)}`, {
+      method: "PATCH",
+      body: JSON.stringify(thresholdPayloadFromForm(row)),
+    });
+    const index = state.inventoryThresholds.findIndex((item) => item.warehouse_sku === warehouseSKU);
+    if (index >= 0) state.inventoryThresholds[index] = { ...state.inventoryThresholds[index], ...data };
+    toast(`${warehouseSKU} 安全线已保存`);
+    renderInventoryThresholds();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
+}
+
+async function resetSKUInventoryThreshold(warehouseSKU, button) {
+  setLoading(button, true);
+  try {
+    await api(`/inventory-thresholds/${encodeURIComponent(warehouseSKU)}/reset`, { method: "POST" });
+    toast(`${warehouseSKU} 已恢复店铺默认安全线`);
+    await loadInventoryThresholds();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
     setLoading(button, false);
   }
 }
@@ -1851,7 +1978,7 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "inventory-thresholds": "库存安全线", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
   if (view === "combined") loadCombinedShipmentCandidates();
@@ -1862,6 +1989,7 @@ function switchView(view) {
   if (view === "shipments") loadHistory();
   if (view === "warehouses") loadWarehouses();
   if (view === "sku-warehouses") loadSKUWarehouseRules();
+  if (view === "inventory-thresholds") loadInventoryThresholds();
   if (view === "tracking-statuses") renderTrackingStatusMappings($("#tracking-status-search").value);
 }
 
@@ -1935,6 +2063,10 @@ $("#sync-warehouses").addEventListener("click", async () => { const button = $("
 $("#order-search").addEventListener("input", () => { state.pages.orders = 1; clearTimeout(state.searchTimer); state.searchTimer = setTimeout(loadOrders, 250); });
 $("#refresh-sku-rules").addEventListener("click", loadSKUWarehouseRules);
 $("#sku-rule-search").addEventListener("input", () => { state.pages.skuRules = 1; clearTimeout(state.skuRuleSearchTimer); state.skuRuleSearchTimer = setTimeout(loadSKUWarehouseRules, 250); });
+$("#refresh-inventory-thresholds").addEventListener("click", loadInventoryThresholds);
+$("#inventory-threshold-search").addEventListener("input", () => { state.pages.inventoryThresholds = 1; clearTimeout(state.inventoryThresholdSearchTimer); state.inventoryThresholdSearchTimer = setTimeout(loadInventoryThresholds, 250); });
+$("#shop-threshold-form").addEventListener("submit", saveShopInventoryThresholds);
+$("#reset-shop-thresholds").addEventListener("click", (event) => resetShopInventoryThresholds(event.currentTarget));
 $("#tracking-status-search").addEventListener("input", (event) => renderTrackingStatusMappings(event.target.value));
 $("#key-form").addEventListener("submit", (event) => { event.preventDefault(); state.operationKey = $("#operation-key").value; sessionStorage.setItem(operationKeyStorage(), state.operationKey); $("#key-dialog").close(); state.keyResolver?.(state.operationKey); state.keyResolver = null; });
 $("#key-cancel").addEventListener("click", () => { $("#key-dialog").close(); state.keyResolver?.(""); state.keyResolver = null; });

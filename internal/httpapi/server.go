@@ -71,6 +71,12 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("PUT /api/carrier-policies/{warehouseKey}", s.updateCarrierPolicies)
 	mux.HandleFunc("GET /api/sku-warehouse-rules", s.listSKUWarehouseRules)
 	mux.HandleFunc("PUT /api/sku-warehouse-rules", s.updateSKUWarehouseRule)
+	mux.HandleFunc("GET /api/inventory-thresholds", s.listInventoryThresholds)
+	mux.HandleFunc("GET /api/inventory-thresholds/defaults", s.inventoryThresholdDefaults)
+	mux.HandleFunc("PATCH /api/inventory-thresholds/defaults", s.updateInventoryThresholdDefaults)
+	mux.HandleFunc("POST /api/inventory-thresholds/defaults/reset", s.resetInventoryThresholdDefaults)
+	mux.HandleFunc("PATCH /api/inventory-thresholds/{warehouseSKU}", s.updateSKUInventoryThreshold)
+	mux.HandleFunc("POST /api/inventory-thresholds/{warehouseSKU}/reset", s.resetSKUInventoryThreshold)
 	mux.HandleFunc("POST /api/orders/{parentOrderSN}/warehouse-preview", s.previewWarehouses)
 	mux.HandleFunc("PATCH /api/warehouse-sku-specs/{warehouseSKU}/package", s.updateWarehouseSKUPackageSpec)
 	mux.HandleFunc("POST /api/shipping/quotes", s.createQuote)
@@ -453,6 +459,83 @@ func (s *Server) listSKUWarehouseRules(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, response{Success: true, Data: items,
 		Meta: map[string]any{"page": page, "page_size": pageSize, "total": total}})
+}
+
+func (s *Server) listInventoryThresholds(w http.ResponseWriter, r *http.Request) {
+	page, pageSize := pagination(r)
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.ListShopSKUInventoryThresholds(ctx, r.URL.Query().Get("q"), page, pageSize)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item.Records, Meta: map[string]any{
+		"page": item.Page, "page_size": item.PageSize, "total": item.Total, "pages": item.Pages,
+		"default_thresholds": item.DefaultThresholds,
+	}})
+}
+
+func (s *Server) inventoryThresholdDefaults(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.ShopInventoryThresholds(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) updateInventoryThresholdDefaults(w http.ResponseWriter, r *http.Request) {
+	var input inventory.InventoryThresholds
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.UpdateShopInventoryThresholds(ctx, input)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) resetInventoryThresholdDefaults(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.ResetShopInventoryThresholds(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) updateSKUInventoryThreshold(w http.ResponseWriter, r *http.Request) {
+	var input inventory.InventoryThresholds
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.UpdateShopSKUInventoryThreshold(ctx, r.PathValue("warehouseSKU"), input)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) resetSKUInventoryThreshold(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	if err := s.service.ResetShopSKUInventoryThreshold(ctx, r.PathValue("warehouseSKU")); err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
 func (s *Server) updateSKUWarehouseRule(w http.ResponseWriter, r *http.Request) {

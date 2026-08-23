@@ -81,11 +81,13 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			return err
 		}
 		shopLogger := logger.With("shop_code", shop.Code, "shop_name", shop.Name)
-		manager := service.New(
+		manager := service.NewForShop(
 			destination,
 			temuClient,
 			inventory.NewClient(cfg.WarehouseDecisionURL, cfg.RequestTimeout),
 			oms.NewClient(cfg.XLWMSOutboundURL, cfg.RequestTimeout),
+			shop.Code,
+			shop.Name,
 			cfg.QuoteLifetime,
 			shopLogger,
 		)

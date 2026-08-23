@@ -46,13 +46,72 @@ type Service struct {
 	temu          *temu.Client
 	inventory     *inventory.Client
 	oms           *oms.Client
+	shopCode      string
+	shopName      string
 	quoteLifetime time.Duration
 	logger        *slog.Logger
 	syncMu        sync.Mutex
 }
 
 func New(destination *store.Postgres, temuClient *temu.Client, inventoryClient *inventory.Client, omsClient *oms.Client, quoteLifetime time.Duration, logger *slog.Logger) *Service {
-	return &Service{store: destination, temu: temuClient, inventory: inventoryClient, oms: omsClient, quoteLifetime: quoteLifetime, logger: logger}
+	return NewForShop(destination, temuClient, inventoryClient, omsClient, "", "", quoteLifetime, logger)
+}
+
+func NewForShop(destination *store.Postgres, temuClient *temu.Client, inventoryClient *inventory.Client, omsClient *oms.Client, shopCode, shopName string, quoteLifetime time.Duration, logger *slog.Logger) *Service {
+	return &Service{
+		store: destination, temu: temuClient, inventory: inventoryClient, oms: omsClient,
+		shopCode: strings.ToLower(strings.TrimSpace(shopCode)), shopName: strings.TrimSpace(shopName),
+		quoteLifetime: quoteLifetime, logger: logger,
+	}
+}
+
+func (s *Service) queryInventory(ctx context.Context, quantities map[string]int) (inventory.DecisionResponse, error) {
+	if s.shopCode == "" {
+		return s.inventory.Query(ctx, quantities)
+	}
+	return s.inventory.QueryForShop(ctx, "temu", s.shopCode, quantities)
+}
+
+func (s *Service) ShopInventoryThresholds(ctx context.Context) (inventory.ShopInventoryThresholds, error) {
+	if s.shopCode == "" {
+		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
+	}
+	return s.inventory.ShopInventoryThresholds(ctx, "temu", s.shopCode)
+}
+
+func (s *Service) UpdateShopInventoryThresholds(ctx context.Context, thresholds inventory.InventoryThresholds) (inventory.ShopInventoryThresholds, error) {
+	if s.shopCode == "" {
+		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
+	}
+	return s.inventory.UpdateShopInventoryThresholds(ctx, "temu", s.shopCode, thresholds)
+}
+
+func (s *Service) ResetShopInventoryThresholds(ctx context.Context) (inventory.ShopInventoryThresholds, error) {
+	if s.shopCode == "" {
+		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
+	}
+	return s.inventory.ResetShopInventoryThresholds(ctx, "temu", s.shopCode)
+}
+
+func (s *Service) ListShopSKUInventoryThresholds(ctx context.Context, query string, page, pageSize int) (inventory.InventoryThresholdPage, error) {
+	if s.shopCode == "" {
+		return inventory.InventoryThresholdPage{}, errors.New("shop code is required")
+	}
+	return s.inventory.ListShopSKUInventoryThresholds(ctx, "temu", s.shopCode, query, page, pageSize)
+}
+
+func (s *Service) UpdateShopSKUInventoryThreshold(ctx context.Context, warehouseSKU string, thresholds inventory.InventoryThresholds) (inventory.SKUInventoryThreshold, error) {
+	if s.shopCode == "" {
+		return inventory.SKUInventoryThreshold{}, errors.New("shop code is required")
+	}
+	return s.inventory.UpdateShopSKUInventoryThreshold(ctx, "temu", s.shopCode, warehouseSKU, thresholds)
+}
+
+func (s *Service) ResetShopSKUInventoryThreshold(ctx context.Context, warehouseSKU string) error {
+	if s.shopCode == "" {
+		return errors.New("shop code is required")
+	}
+	return s.inventory.ResetShopSKUInventoryThreshold(ctx, "temu", s.shopCode, warehouseSKU)
 }
 
 type TokenStatus struct {
@@ -360,7 +419,7 @@ func (s *Service) ClassifyWarehouseQueue(ctx context.Context, limit int) (Wareho
 		group.orders = append(group.orders, order)
 	}
 	for _, group := range groups {
-		decision, queryErr := s.inventory.Query(ctx, group.quantities)
+		decision, queryErr := s.queryInventory(ctx, group.quantities)
 		if queryErr == nil {
 			queryErr = s.applyShopSKUWarehouseRules(ctx, &decision)
 		}
@@ -968,7 +1027,7 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 		}
 		quantities[line.ExtCode] += line.Quantity
 	}
-	decision, queryErr := s.inventory.Query(ctx, quantities)
+	decision, queryErr := s.queryInventory(ctx, quantities)
 	if queryErr == nil {
 		if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
 			return WarehousePreview{}, err
@@ -1111,7 +1170,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		quantities[line.ExtCode] += line.Quantity
 	}
 	inventoryStarted := time.Now()
-	decision, err := s.inventory.Query(ctx, quantities)
+	decision, err := s.queryInventory(ctx, quantities)
 	if err != nil {
 		return QuoteResult{}, err
 	}
