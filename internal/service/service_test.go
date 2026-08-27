@@ -202,8 +202,17 @@ func TestDeliveryAddressUnsupported(t *testing.T) {
 	if !deliveryAddressUnsupported("Order failed: the delivery address is not supported for our service") {
 		t.Fatal("documented address rejection must be recognized")
 	}
+	if !deliveryAddressUnsupported("Please check whether the package delivery information is correct. Error reason: This ZIP code is not supported by GOFO delivery service.") {
+		t.Fatal("carrier-specific ZIP rejection must be recognized")
+	}
+	if !deliveryAddressUnsupported("This postal code is unsupported by the carrier") {
+		t.Fatal("carrier-specific postal rejection must be recognized")
+	}
 	if deliveryAddressUnsupported("address field is missing") {
 		t.Fatal("unrelated address validation errors must not trigger carrier fallback")
+	}
+	if deliveryAddressUnsupported("The ZIP code is invalid") {
+		t.Fatal("an invalid address must not be treated as a carrier coverage failure")
 	}
 }
 
@@ -240,6 +249,22 @@ func TestAutomaticCarrierFallbackAllowed(t *testing.T) {
 	exhausted.SubmissionAttempts = maxShipmentSubmissionAttempts
 	if automaticCarrierFallbackAllowed(exhausted) {
 		t.Fatal("the submission attempt limit must block carrier fallback")
+	}
+}
+
+func TestCarrierCoverageNeedsManualWhenTemuCreatedFailedPackage(t *testing.T) {
+	base := model.Shipment{
+		Status:              "label_failed",
+		ErrorMessage:        "This ZIP code is not supported by GOFO delivery service.",
+		PackageSNList:       []string{"PK-failed"},
+		ShippingCompanyName: "GOFO",
+	}
+	if !carrierCoverageNeedsManual(base) {
+		t.Fatal("a carrier coverage failure with a Temu package must move to manual review")
+	}
+	base.TrackingNumber = "TRACK-1"
+	if carrierCoverageNeedsManual(base) {
+		t.Fatal("tracking evidence must block manual rerouting")
 	}
 }
 

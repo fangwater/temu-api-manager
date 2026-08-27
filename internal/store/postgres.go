@@ -1731,7 +1731,14 @@ WHERE failed_shipment.id=j.shipment_id
   AND failed_shipment.confirmed_at IS NULL
   AND cardinality(failed_shipment.package_sn_list)=0
   AND failed_shipment.submission_attempts < 3
-  AND lower(failed_shipment.error_message) LIKE '%delivery address is not supported%'
+  AND (
+      lower(failed_shipment.error_message) LIKE '%delivery address is not supported%'
+      OR (
+          (lower(failed_shipment.error_message) LIKE '%zip%' OR lower(failed_shipment.error_message) LIKE '%postal%')
+          AND (lower(failed_shipment.error_message) LIKE '%not supported%' OR lower(failed_shipment.error_message) LIKE '%unsupported%')
+          AND (lower(failed_shipment.error_message) LIKE '%delivery service%' OR lower(failed_shipment.error_message) LIKE '%carrier%')
+      )
+  )
    ))
 ORDER BY `+autoFulfillmentClaimOrder+`,
 EXISTS (

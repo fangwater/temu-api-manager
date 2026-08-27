@@ -565,21 +565,28 @@ function renderBulkFulfillment() {
     progress.hidden = true;
     return;
   }
+  const succeeded = Number(batch.succeeded_orders || 0);
+  const failed = Number(batch.failed_orders || 0);
+  const processed = succeeded + failed;
   progress.hidden = false;
-  progress.classList.add(batch.status);
+  progress.classList.add(batch.status === "completed" && failed > 0 ? "completed-with-errors" : batch.status);
   if (batch.status === "running") {
     restart.hidden = false;
     button.disabled = true;
-    text.textContent = `发货中 ${batch.succeeded_orders}/${batch.total_orders}`;
-    progress.textContent = `按时间顺序 · 最多 8 单并发 · 已完成 ${batch.succeeded_orders}/${batch.total_orders}${batch.current_order_sn ? ` · 当前队首 ${batch.current_order_sn}` : ""}`;
+    text.textContent = `发货中 ${processed}/${batch.total_orders}`;
+    progress.textContent = `按时间顺序 · 最多 8 单并发 · 已处理 ${processed}/${batch.total_orders}${failed ? ` · 异常 ${failed}` : ""}${batch.current_order_sn ? ` · 当前队首 ${batch.current_order_sn}` : ""}`;
     return;
   }
   restart.hidden = batch.status === "completed";
   button.disabled = false;
   text.textContent = batch.status === "stopped" ? "重新一键发货" : "一键发货";
-  progress.textContent = batch.status === "stopped"
-    ? `已在 ${batch.failed_order_sn || "异常订单"} 停止 · ${batch.last_error || "自动发货失败"}`
-    : `上一批已完成 ${batch.succeeded_orders}/${batch.total_orders}`;
+  if (batch.status === "stopped") {
+    progress.textContent = `旧批次已停止 · 重启后将继续处理 · ${batch.last_error || "自动发货失败"}`;
+  } else if (failed > 0) {
+    progress.textContent = `上一批已处理完成 · 成功 ${succeeded} · 异常 ${failed}`;
+  } else {
+    progress.textContent = `上一批已完成 ${succeeded}/${batch.total_orders}`;
+  }
 }
 
 async function restartBulkFulfillment() {
@@ -606,7 +613,7 @@ async function startBulkFulfillment() {
     toast("当前没有可自动发货的订单", true);
     return;
   }
-  if (!window.confirm(`将按最晚发货时间依次处理当前 ${total} 个自动订单，最多 8 单并发；任一订单失败即停止派发新单。确认开始？`)) return;
+  if (!window.confirm(`将按最晚发货时间依次处理当前 ${total} 个自动订单，最多 8 单并发；单个订单异常会单独记录，不阻塞后续发货。确认开始？`)) return;
   const button = $("#bulk-fulfill");
   setLoading(button, true);
   try {

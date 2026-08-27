@@ -234,6 +234,12 @@ func (p *Postgres) FinishBulkFulfillmentItem(ctx context.Context, batchID, paren
 		return model.BulkFulfillmentBatch{}, err
 	}
 	defer tx.Rollback(ctx)
+	var failedOrderSN, lastBatchError string
+	if err := tx.QueryRow(ctx, `
+		SELECT failed_order_sn,last_error FROM temu_bulk_fulfillment_batches WHERE id=$1 FOR UPDATE
+	`, batchID).Scan(&failedOrderSN, &lastBatchError); err != nil {
+		return model.BulkFulfillmentBatch{}, err
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE temu_bulk_fulfillment_items SET status=$3,last_error=$4,updated_at=now()
 		WHERE batch_id=$1 AND parent_order_sn=$2 AND status IN ('pending','running')
@@ -248,19 +254,17 @@ func (p *Postgres) FinishBulkFulfillmentItem(ctx context.Context, batchID, paren
 	`, batchID).Scan(&succeeded, &failed, &remaining); err != nil {
 		return model.BulkFulfillmentBatch{}, err
 	}
-	batchStatus := "running"
-	if failed > 0 {
-		batchStatus = "stopped"
-	} else if remaining == 0 {
-		batchStatus = "completed"
+	if status == "failed" {
+		failedOrderSN = parentOrderSN
+		lastBatchError = lastError
 	}
+	batchStatus := bulkFulfillmentBatchStatus(remaining)
 	if _, err := tx.Exec(ctx, `
 		UPDATE temu_bulk_fulfillment_batches SET status=$2,succeeded_orders=$3,failed_orders=$4,
-			failed_order_sn=CASE WHEN $2='stopped' THEN $5 ELSE '' END,
-			last_error=CASE WHEN $2='stopped' THEN $6 ELSE '' END,
-			updated_at=now(),completed_at=CASE WHEN $2 IN ('stopped','completed') THEN now() ELSE NULL END
+			failed_order_sn=$5,last_error=$6,
+			updated_at=now(),completed_at=CASE WHEN $2='completed' THEN now() ELSE NULL END
 		WHERE id=$1
-	`, batchID, batchStatus, succeeded, failed, parentOrderSN, lastError); err != nil {
+	`, batchID, batchStatus, succeeded, failed, failedOrderSN, lastBatchError); err != nil {
 		return model.BulkFulfillmentBatch{}, err
 	}
 	batch, err := scanBulkFulfillmentBatch(tx.QueryRow(ctx, bulkBatchSelect+` WHERE b.id=$1`, batchID))
@@ -271,6 +275,13 @@ func (p *Postgres) FinishBulkFulfillmentItem(ctx context.Context, batchID, paren
 		return model.BulkFulfillmentBatch{}, err
 	}
 	return batch, nil
+}
+
+func bulkFulfillmentBatchStatus(remaining int) string {
+	if remaining > 0 {
+		return "running"
+	}
+	return "completed"
 }
 
 func scanBulkFulfillmentBatch(row pgx.Row) (model.BulkFulfillmentBatch, error) {

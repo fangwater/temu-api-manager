@@ -1579,7 +1579,18 @@ func recoveryExcludedCarrierCodes(shipment model.Shipment) []string {
 }
 
 func deliveryAddressUnsupported(message string) bool {
-	return strings.Contains(strings.ToLower(message), "delivery address is not supported")
+	message = strings.ToLower(strings.TrimSpace(message))
+	if strings.Contains(message, "delivery address is not supported") {
+		return true
+	}
+	mentionsPostalCode := strings.Contains(message, "zip") || strings.Contains(message, "postal") ||
+		strings.Contains(message, "邮编") || strings.Contains(message, "邮政编码")
+	unsupported := strings.Contains(message, "not supported") || strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "does not support") || strings.Contains(message, "不支持") ||
+		strings.Contains(message, "无法配送") || strings.Contains(message, "服务范围")
+	carrierSpecific := strings.Contains(message, "delivery service") || strings.Contains(message, "carrier") ||
+		strings.Contains(message, "承运商") || strings.Contains(message, "物流服务")
+	return mentionsPostalCode && unsupported && carrierSpecific
 }
 
 func automaticCarrierFallbackAllowed(shipment model.Shipment) bool {
@@ -1587,6 +1598,12 @@ func automaticCarrierFallbackAllowed(shipment model.Shipment) bool {
 		deliveryAddressUnsupported(shipment.ErrorMessage) &&
 		shipment.SubmissionAttempts < maxShipmentSubmissionAttempts &&
 		validateFailedShipmentRecovery(shipment) == nil
+}
+
+func carrierCoverageNeedsManual(shipment model.Shipment) bool {
+	return shipment.Status == "label_failed" && len(shipment.PackageSNList) > 0 &&
+		strings.TrimSpace(shipment.TrackingNumber) == "" && shipment.ConfirmedAt == nil &&
+		deliveryAddressUnsupported(shipment.ErrorMessage)
 }
 
 type PurchaseResult struct {
@@ -2505,6 +2522,30 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			}
 			return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "waiting_oms", "")
 		case "label_failed":
+			if carrierCoverageNeedsManual(shipment) {
+				updated, refreshErr := s.RefreshShipment(ctx, shipment.ID)
+				shipment = updated
+				if refreshErr != nil {
+					nextStatus := fulfillmentErrorStatus(refreshErr, "waiting_label")
+					_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, refreshErr.Error())
+					return refreshErr
+				}
+				if shipment.Status != "label_failed" {
+					continue
+				}
+			}
+			if carrierCoverageNeedsManual(shipment) {
+				failedCarrier := carrierCode(temu.ShippingChannel{ShippingCompanyName: shipment.ShippingCompanyName, ShipLogisticsType: shipment.ShipLogisticsType})
+				if err := s.store.RecordShipmentCarrierFailure(ctx, shipment.ID, failedCarrier); err != nil {
+					return err
+				}
+				if err := s.addManualReviewReason(ctx, shipment.ParentOrderSN, manualReasonDeliveryAddress); err != nil {
+					_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, "failed", err.Error())
+					return err
+				}
+				message := shipment.ErrorMessage + "；Temu 已创建失败包裹，已安全转入人工处理，未重复购单"
+				return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "skipped", message)
+			}
 			if automaticCarrierFallbackAllowed(shipment) {
 				failedCarrier := carrierCode(temu.ShippingChannel{ShippingCompanyName: shipment.ShippingCompanyName, ShipLogisticsType: shipment.ShipLogisticsType})
 				if err := s.store.RecordShipmentCarrierFailure(ctx, shipment.ID, failedCarrier); err != nil {
