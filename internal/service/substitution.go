@@ -94,16 +94,25 @@ func (s *Service) ListSubstitutionOrders(ctx context.Context, query string, page
 		if orderErr != nil {
 			return nil, 0, 0, orderErr
 		}
-		quantities := orderQuantities(order)
-		matches := make([]SubstitutionOrderMatch, 0)
-		for _, sku := range targets {
-			if quantities[sku] > 0 {
-				matches = append(matches, SubstitutionOrderMatch{WarehouseSKU: sku, Quantity: quantities[sku], Combination: bySKU[sku]})
-			}
+		match, ok := singleUnitSubstitutionMatch(order, bySKU)
+		if !ok {
+			continue
 		}
-		result = append(result, SubstitutionOrderCandidate{Order: order, Matches: matches})
+		result = append(result, SubstitutionOrderCandidate{Order: order, Matches: []SubstitutionOrderMatch{match}})
 	}
 	return result, total, len(combinations), nil
+}
+
+func singleUnitSubstitutionMatch(order model.Order, bySKU map[string]inventory.SKUCombination) (SubstitutionOrderMatch, bool) {
+	if len(order.Lines) != 1 || order.Lines[0].Quantity != 1 {
+		return SubstitutionOrderMatch{}, false
+	}
+	sku := strings.TrimSpace(order.Lines[0].ExtCode)
+	combination, ok := bySKU[sku]
+	if sku == "" || !ok {
+		return SubstitutionOrderMatch{}, false
+	}
+	return SubstitutionOrderMatch{WarehouseSKU: sku, Quantity: 1, Combination: combination}, true
 }
 
 func (s *Service) CompareSubstitutionPrices(ctx context.Context, parent string) (SubstitutionPriceComparison, error) {

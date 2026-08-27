@@ -6,7 +6,33 @@ import (
 	"testing"
 
 	"temu-api-manager/internal/inventory"
+	"temu-api-manager/internal/model"
 )
+
+func TestSingleUnitSubstitutionMatchUsesOriginalOrderQuantity(t *testing.T) {
+	combination := inventory.SKUCombination{
+		SubstituteForSKU: "SKU-20",
+		Items:            []inventory.SKUCombinationItem{{WarehouseSKU: "SKU-10", Quantity: 2}},
+	}
+	catalog := map[string]inventory.SKUCombination{"SKU-20": combination}
+
+	match, ok := singleUnitSubstitutionMatch(model.Order{Lines: []model.OrderLine{{ExtCode: " SKU-20 ", Quantity: 1}}}, catalog)
+	if !ok || match.WarehouseSKU != "SKU-20" || match.Quantity != 1 || len(match.Combination.Items) != 1 || match.Combination.Items[0].Quantity != 2 {
+		t.Fatalf("unexpected single-unit match: ok=%v match=%#v", ok, match)
+	}
+
+	for name, order := range map[string]model.Order{
+		"multiple units": {Lines: []model.OrderLine{{ExtCode: "SKU-20", Quantity: 2}}},
+		"multiple lines": {Lines: []model.OrderLine{{ExtCode: "SKU-20", Quantity: 1}, {ExtCode: "OTHER", Quantity: 1}}},
+		"unknown SKU":    {Lines: []model.OrderLine{{ExtCode: "OTHER", Quantity: 1}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, matched := singleUnitSubstitutionMatch(order, catalog); matched {
+				t.Fatal("order should remain in the manual queue")
+			}
+		})
+	}
+}
 
 func TestExpandSubstitutionQuantitiesMultipliesRecipe(t *testing.T) {
 	combination := inventory.SKUCombination{Items: []inventory.SKUCombinationItem{

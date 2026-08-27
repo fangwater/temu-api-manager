@@ -28,7 +28,9 @@ func (p *Postgres) ListSubstitutionOrderSNs(ctx context.Context, warehouseSKUs [
 	query = strings.TrimSpace(query)
 	where := `WHERE o.is_open AND o.parent_order_status=2
 		AND NOT EXISTS (SELECT 1 FROM temu_shipment_orders shipped WHERE shipped.parent_order_sn=o.parent_order_sn)
-		AND EXISTS (SELECT 1 FROM temu_order_lines candidate WHERE candidate.parent_order_sn=o.parent_order_sn AND btrim(candidate.ext_code)=ANY($1::text[]))
+		AND (SELECT count(*) FROM temu_order_lines item_count WHERE item_count.parent_order_sn=o.parent_order_sn)=1
+		AND EXISTS (SELECT 1 FROM temu_order_lines candidate WHERE candidate.parent_order_sn=o.parent_order_sn
+			AND candidate.quantity=1 AND btrim(candidate.ext_code)=ANY($1::text[]))
 		AND ($2='' OR o.parent_order_sn ILIKE '%' || $2 || '%' OR EXISTS (
 			SELECT 1 FROM temu_order_lines searched WHERE searched.parent_order_sn=o.parent_order_sn
 			AND (searched.order_sn ILIKE '%' || $2 || '%' OR searched.ext_code ILIKE '%' || $2 || '%')))`
