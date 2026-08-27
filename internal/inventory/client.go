@@ -121,6 +121,27 @@ type SKUCombination struct {
 	Items            []SKUCombinationItem `json:"items"`
 }
 
+type ProductPairingValidationItem struct {
+	SystemSKU string `json:"system_sku"`
+	Quantity  int    `json:"quantity"`
+}
+
+type ProductPairingValidationRequest struct {
+	Account     string                         `json:"account"`
+	PlatformSKU string                         `json:"platform_sku"`
+	Items       []ProductPairingValidationItem `json:"items"`
+}
+
+type ProductPairingValidation struct {
+	Account               string `json:"account"`
+	PlatformSKU           string `json:"platform_sku"`
+	Ready                 bool   `json:"ready"`
+	Reason                string `json:"reason,omitempty"`
+	ExactPlatformRecords  int    `json:"exact_platform_records"`
+	MatchingRecipeRecords int    `json:"matching_recipe_records"`
+	ApprovedRecords       int    `json:"approved_records"`
+}
+
 type PackageSpecResolveRequest struct {
 	WarehouseSKU string `json:"warehouse_sku"`
 	Quantity     int    `json:"quantity"`
@@ -326,6 +347,33 @@ func (c *Client) ListActiveSKUCombinations(ctx context.Context) ([]SKUCombinatio
 		return nil, fmt.Errorf("list active SKU substitutions: %w", err)
 	}
 	return items, nil
+}
+
+func (c *Client) ValidateProductPairing(ctx context.Context, input ProductPairingValidationRequest) (ProductPairingValidation, error) {
+	input.Account = strings.TrimSpace(input.Account)
+	input.PlatformSKU = strings.TrimSpace(input.PlatformSKU)
+	if input.Account == "" || input.PlatformSKU == "" || len(input.Items) == 0 {
+		return ProductPairingValidation{}, errors.New("OMS account, platform SKU, and pairing items are required")
+	}
+	for index := range input.Items {
+		input.Items[index].SystemSKU = strings.TrimSpace(input.Items[index].SystemSKU)
+		if input.Items[index].SystemSKU == "" || input.Items[index].Quantity <= 0 {
+			return ProductPairingValidation{}, errors.New("pairing items require a system SKU and positive quantity")
+		}
+	}
+	endpoint, err := c.managerEndpoint("/product-pairings/validate")
+	if err != nil {
+		return ProductPairingValidation{}, err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return ProductPairingValidation{}, err
+	}
+	var result ProductPairingValidation
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, body, "", "", &result); err != nil {
+		return ProductPairingValidation{}, fmt.Errorf("validate OMS product pairing: %w", err)
+	}
+	return result, nil
 }
 
 func (c *Client) managerEndpoint(path string) (string, error) {

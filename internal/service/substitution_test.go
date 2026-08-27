@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"temu-api-manager/internal/inventory"
@@ -14,6 +16,45 @@ func TestExpandSubstitutionQuantitiesMultipliesRecipe(t *testing.T) {
 	got := expandSubstitutionQuantities(combination, 3)
 	if got["SKU-10"] != 6 || got["CLIP"] != 3 {
 		t.Fatalf("unexpected quantities: %#v", got)
+	}
+}
+
+func TestValidateSubstitutionCombinationRequiresDimensionsWeightAndMembers(t *testing.T) {
+	valid := inventory.SKUCombination{
+		Enabled: true, SubstituteForSKU: "SKU-20", LengthCM: 20, WidthCM: 10, HeightCM: 5, WeightKG: 1,
+		Items: []inventory.SKUCombinationItem{{WarehouseSKU: "SKU-10", Quantity: 2}},
+	}
+	if err := validateSubstitutionCombination(valid); err != nil {
+		t.Fatal(err)
+	}
+	missingWeight := valid
+	missingWeight.WeightKG = 0
+	if err := validateSubstitutionCombination(missingWeight); err == nil || !strings.Contains(err.Error(), "重量") {
+		t.Fatalf("expected weight error, got %v", err)
+	}
+	missingItems := valid
+	missingItems.Items = nil
+	if err := validateSubstitutionCombination(missingItems); err == nil || !strings.Contains(err.Error(), "组合成员") {
+		t.Fatalf("expected member error, got %v", err)
+	}
+}
+
+func TestSubstitutionOMSPairingRequestRequiresApprovedDirectMapping(t *testing.T) {
+	combination := inventory.SKUCombination{
+		SubstituteForSKU: "SKU-20",
+		Items:            []inventory.SKUCombinationItem{{WarehouseSKU: "SKU-10", Quantity: 2}},
+	}
+	request := substitutionOMSPairingRequest("arp", combination)
+	if request.Account != "arp" || request.PlatformSKU != "SKU-20" || len(request.Items) != 1 ||
+		request.Items[0].SystemSKU != "SKU-20" || request.Items[0].Quantity != 1 {
+		t.Fatalf("unexpected pairing request: %#v", request)
+	}
+}
+
+func TestSubstitutionProblemMessagesPreservesClearUniqueReasons(t *testing.T) {
+	got := substitutionProblemMessages([]error{errors.New("DPS002: 库存不足"), errors.New("DPS002: 库存不足"), errors.New("ARP_EAST: 产品配对未审核")})
+	if len(got) != 2 || got[0] != "DPS002: 库存不足" || got[1] != "ARP_EAST: 产品配对未审核" {
+		t.Fatalf("unexpected reasons: %#v", got)
 	}
 }
 
@@ -42,5 +83,15 @@ func TestSelectWarehouseForPriceComparisonRejectsInsufficientStock(t *testing.T)
 	}}}
 	if _, err := selectWarehouseForPriceComparison(decision, map[string]int{"SKU-10": 2}, "DPS002"); err == nil {
 		t.Fatal("expected insufficient stock error")
+	}
+}
+
+func TestSelectWarehouseForPriceComparisonRequiresEveryRequestedSKURecord(t *testing.T) {
+	decision := inventory.DecisionResponse{Complete: true, Records: []inventory.SKUDecision{{
+		SKU: "SKU-10", Regions: []inventory.Region{{Region: "east", Warehouses: []inventory.Warehouse{{Key: "DPS002", Selectable: true, Available: 5}}}},
+	}}}
+	_, err := selectWarehouseForPriceComparison(decision, map[string]int{"SKU-10": 1, "CLIP": 1}, "DPS002")
+	if err == nil || !strings.Contains(err.Error(), "CLIP") {
+		t.Fatalf("expected missing SKU record error, got %v", err)
 	}
 }

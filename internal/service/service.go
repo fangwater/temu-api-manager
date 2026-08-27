@@ -1105,6 +1105,7 @@ type storedQuoteRequest struct {
 	SelectedChannel    temu.ShippingChannel      `json:"selected_channel"`
 	RecoveryShipmentID string                    `json:"recovery_shipment_id,omitempty"`
 	ChoiceAnalysis     model.LabelPurchaseChoice `json:"choice_analysis,omitempty"`
+	Substitution       *storedSubstitutionQuote  `json:"substitution,omitempty"`
 }
 
 func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult, error) {
@@ -1608,12 +1609,16 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	if !order.Open || order.Status != 2 {
 		return PurchaseResult{}, errOrderNoLongerAwaitingShipment
 	}
-	if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
-		return PurchaseResult{}, err
-	}
 	var saved storedQuoteRequest
 	if err := json.Unmarshal(quote.RequestPayload, &saved); err != nil {
 		return PurchaseResult{}, errors.New("stored quote request is invalid")
+	}
+	if saved.Substitution != nil {
+		if err := s.validateStoredSubstitutionQuote(ctx, order, quote, saved); err != nil {
+			return PurchaseResult{}, err
+		}
+	} else if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
+		return PurchaseResult{}, err
 	}
 	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel)
 	if err != nil {

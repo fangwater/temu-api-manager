@@ -10,6 +10,8 @@ state.substitutionMeta = {};
 state.substitutionParentOrderSN = "";
 state.substitutionController = null;
 state.substitutionRequestSequence = 0;
+state.substitutionComparison = null;
+state.substitutionSelectedQuote = null;
 state.pages.substitutions = 1;
 state.omsPlatformOrders = [];
 state.omsPlatformOrderMeta = {};
@@ -353,16 +355,22 @@ function formatSubstitutionMoney(quote) {
   }
 }
 
-function renderSubstitutionPriceOption(option, title) {
+function renderSubstitutionPriceOption(option, title, selectable = false) {
   const available = Boolean(option?.available && option.best_quote);
   const best = option?.best_quote;
   const unavailableLabel = title === "直接发货" ? "无法直发" : "无法替代";
   const items = (option?.items || []).map((item) => `<span>${escapeHtml(item.warehouse_sku)} × ${item.quantity}</span>`).join("");
-  const quotes = (option?.quotes || []).map((quote) => `<div class="substitution-warehouse-price"><div><strong>${escapeHtml(quote.warehouse_name || quote.warehouse_key)}</strong><small>${escapeHtml(quote.shipping_company_name)} · ${escapeHtml(quote.ship_logistics_type || "-")}</small></div><b>${escapeHtml(formatSubstitutionMoney(quote))}</b></div>`).join("");
+  const quotes = (option?.quotes || []).map((quote, index) => {
+    const selected = selectable && index === 0;
+    const content = `<div><strong>${escapeHtml(quote.warehouse_name || quote.warehouse_key)}</strong><small>${escapeHtml(quote.shipping_company_name)} · ${escapeHtml(quote.ship_logistics_type || "-")}</small></div><b>${escapeHtml(formatSubstitutionMoney(quote))}</b>`;
+    if (!selectable) return `<div class="substitution-warehouse-price">${content}</div>`;
+    return `<label class="substitution-warehouse-price selectable ${selected ? "selected" : ""}"><input type="radio" name="substitution-warehouse" data-substitution-warehouse="${escapeHtml(quote.warehouse_key)}" data-substitution-channel="${Number(quote.channel_id || 0)}" ${selected ? "checked" : ""} /><span class="channel-radio"></span>${content}</label>`;
+  }).join("");
+  const problems = available ? (option?.unavailable_reasons || []).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("") : "";
   return `<header><div><small>${title === "直接发货" ? "原 SKU" : "替代组合"}</small><h3>${title}</h3></div><span class="status-badge ${available ? "" : "neutral"}">${available ? "可发货" : unavailableLabel}</span></header>
     <div class="substitution-option-items">${items}</div>
     <div class="substitution-best-price ${available ? "" : "empty"}"><small>最低面单成本</small><strong>${available ? escapeHtml(formatSubstitutionMoney(best)) : ""}</strong><span>${available ? `${escapeHtml(best.warehouse_name || best.warehouse_key)} · ${escapeHtml(best.shipping_company_name)}` : escapeHtml(option?.reason || "")}</span></div>
-    <div class="substitution-warehouse-prices">${quotes}</div>`;
+    <div class="substitution-warehouse-prices">${quotes}</div>${problems ? `<div class="substitution-problems"><small>其他仓库不可用</small><ul>${problems}</ul></div>` : ""}`;
 }
 
 function renderSubstitutionComparison(data) {
@@ -373,10 +381,53 @@ function renderSubstitutionComparison(data) {
   $("#substitution-recipe").textContent = recipe || combination.name || "-";
   $("#substitution-quoted-at").textContent = formatTime(data.queried_at);
   $("#substitution-direct").innerHTML = renderSubstitutionPriceOption(data.direct, "直接发货");
-  $("#substitution-replacement").innerHTML = renderSubstitutionPriceOption(data.replacement, "替代发货");
+  $("#substitution-replacement").innerHTML = renderSubstitutionPriceOption(data.replacement, "替代发货", true);
+  state.substitutionComparison = data;
+  state.substitutionSelectedQuote = data.replacement?.quotes?.[0] || null;
+  $("#substitution-purchase-confirm").checked = false;
+  $$('[data-substitution-warehouse]').forEach((input) => input.addEventListener("change", () => {
+    state.substitutionSelectedQuote = (data.replacement?.quotes || []).find((quote) => quote.warehouse_key === input.dataset.substitutionWarehouse && Number(quote.channel_id) === Number(input.dataset.substitutionChannel)) || null;
+    $$('.substitution-warehouse-price.selectable').forEach((row) => row.classList.toggle("selected", row.contains(input)));
+    syncSubstitutionPurchaseControls();
+  }));
+  syncSubstitutionPurchaseControls();
   $("#substitution-loading").hidden = true;
   $("#substitution-error").hidden = true;
   $("#substitution-comparison").hidden = false;
+}
+
+function syncSubstitutionPurchaseControls() {
+  const ready = Boolean(state.substitutionSelectedQuote);
+  $("#substitution-purchase-confirm").disabled = !ready;
+  $("#substitution-confirm-row").classList.toggle("disabled", !ready);
+  $("#substitution-purchase").disabled = !ready || !$("#substitution-purchase-confirm").checked;
+}
+
+async function purchaseSubstitutionLabel() {
+  const quote = state.substitutionSelectedQuote;
+  const parentOrderSN = state.substitutionParentOrderSN;
+  if (!quote || !parentOrderSN || !$("#substitution-purchase-confirm").checked) return;
+  const button = $("#substitution-purchase");
+  setLoading(button, true);
+  button.textContent = "正在复核并购买面单";
+  try {
+    const { data } = await api(`/substitution-orders/${encodeURIComponent(parentOrderSN)}/purchase`, {
+      method: "POST",
+      timeoutMs: 120000,
+      body: JSON.stringify({ warehouse_key: quote.warehouse_key, channel_id: quote.channel_id, confirm: true }),
+    });
+    toast(data.duplicate ? "该订单已有发货记录，未重复提交" : "组合面单购买请求已提交，后续确认与正常发货一致");
+    $("#substitution-dialog").close();
+    await Promise.all([loadOrders(), loadSubstitutionOrders(), loadShipments(), loadBulkFulfillment()]);
+    switchView("labels");
+  } catch (error) {
+    toast(error.message, true);
+    $("#substitution-purchase-confirm").checked = false;
+    syncSubstitutionPurchaseControls();
+  } finally {
+    setLoading(button, false);
+    button.textContent = "确认并购买组合面单";
+  }
 }
 
 async function loadSubstitutionComparison() {
@@ -386,6 +437,10 @@ async function loadSubstitutionComparison() {
   const controller = new AbortController();
   state.substitutionController = controller;
   const sequence = ++state.substitutionRequestSequence;
+  state.substitutionComparison = null;
+  state.substitutionSelectedQuote = null;
+  $("#substitution-purchase-confirm").checked = false;
+  syncSubstitutionPurchaseControls();
   $("#substitution-loading").hidden = false;
   $("#substitution-comparison").hidden = true;
   $("#substitution-error").hidden = true;
@@ -405,6 +460,8 @@ async function loadSubstitutionComparison() {
 
 function openSubstitutionComparison(parentOrderSN) {
   state.substitutionParentOrderSN = parentOrderSN;
+  state.substitutionComparison = null;
+  state.substitutionSelectedQuote = null;
   $("#substitution-dialog-title").textContent = `发货成本对比 · ${parentOrderSN}`;
   $("#substitution-dialog").showModal();
   loadSubstitutionComparison();
@@ -2140,7 +2197,9 @@ $("#substitution-search").addEventListener("input", () => { state.pages.substitu
 $("#substitution-retry").addEventListener("click", loadSubstitutionComparison);
 $("#substitution-error-retry").addEventListener("click", loadSubstitutionComparison);
 $("#substitution-close").addEventListener("click", () => $("#substitution-dialog").close());
-$("#substitution-dialog").addEventListener("close", () => { state.substitutionRequestSequence += 1; state.substitutionController?.abort(); state.substitutionController = null; state.substitutionParentOrderSN = ""; });
+$("#substitution-purchase-confirm").addEventListener("change", syncSubstitutionPurchaseControls);
+$("#substitution-purchase").addEventListener("click", purchaseSubstitutionLabel);
+$("#substitution-dialog").addEventListener("close", () => { state.substitutionRequestSequence += 1; state.substitutionController?.abort(); state.substitutionController = null; state.substitutionParentOrderSN = ""; state.substitutionComparison = null; state.substitutionSelectedQuote = null; $("#substitution-purchase-confirm").checked = false; });
 $("#restart-bulk").addEventListener("click", restartBulkFulfillment);
 $("#refresh-manual").addEventListener("click", () => loadManualOrders());
 $("#export-manual").addEventListener("click", exportManualOrders);

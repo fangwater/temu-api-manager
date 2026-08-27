@@ -123,6 +123,36 @@ func TestListActiveSKUCombinationsUsesWarehouseManagerEndpoint(t *testing.T) {
 	}
 }
 
+func TestValidateProductPairingUsesWarehouseManagerEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/product-pairings/validate" {
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.String())
+		}
+		var body ProductPairingValidationRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Account != "arp" || body.PlatformSKU != "SKU-20" || len(body.Items) != 1 || body.Items[0].SystemSKU != "SKU-10" || body.Items[0].Quantity != 2 {
+			t.Fatalf("unexpected request body: %#v", body)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"account":"arp","platform_sku":"SKU-20","ready":true,"exact_platform_records":1,"matching_recipe_records":1,"approved_records":1}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	result, err := client.ValidateProductPairing(context.Background(), ProductPairingValidationRequest{
+		Account: " arp ", PlatformSKU: " SKU-20 ",
+		Items: []ProductPairingValidationItem{{SystemSKU: " SKU-10 ", Quantity: 2}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Ready || result.ApprovedRecords != 1 {
+		t.Fatalf("unexpected validation: %#v", result)
+	}
+}
+
 func TestQueryForShopSendsShopIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/temu/warehouse-availability/query" {

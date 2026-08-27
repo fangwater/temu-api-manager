@@ -53,6 +53,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("GET /api/orders", s.listOrders)
 	mux.HandleFunc("GET /api/substitution-orders", s.listSubstitutionOrders)
 	mux.HandleFunc("POST /api/substitution-orders/{parentOrderSN}/quotes", s.compareSubstitutionPrices)
+	mux.HandleFunc("POST /api/substitution-orders/{parentOrderSN}/purchase", s.purchaseSubstitution)
 	mux.HandleFunc("GET /api/combined-shipment-candidates", s.combinedShipmentCandidates)
 	mux.HandleFunc("GET /api/orders/history", s.listOrderHistory)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/detail", s.getOrderDetail)

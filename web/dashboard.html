@@ -370,7 +370,8 @@
             <section class="substitution-price-card" id="substitution-direct"></section>
             <section class="substitution-price-card replacement" id="substitution-replacement"></section>
           </div>
-          <div class="dialog-actions"><button type="button" class="secondary-button" id="substitution-retry"><svg><use href="#i-refresh"/></svg>重新询价</button><button type="button" class="primary-button" id="substitution-close">关闭</button></div>
+          <label class="check-row substitution-confirm" id="substitution-confirm-row"><input id="substitution-purchase-confirm" type="checkbox" disabled /><span>我确认使用选中的替代组合、仓库和实时物流渠道购买面单</span></label>
+          <div class="dialog-actions"><button type="button" class="secondary-button" id="substitution-retry"><svg><use href="#i-refresh"/></svg>重新询价</button><button type="button" class="secondary-button" id="substitution-close">关闭</button><button type="button" class="danger-button" id="substitution-purchase" disabled>确认并购买组合面单</button></div>
         </div>
         <div class="substitution-error" id="substitution-error" role="alert" hidden><span></span><button type="button" class="secondary-button" id="substitution-error-retry">重试</button></div>
       </div>
