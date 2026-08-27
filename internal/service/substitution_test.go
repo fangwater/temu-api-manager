@@ -65,14 +65,19 @@ func TestValidateSubstitutionCombinationRequiresDimensionsWeightAndMembers(t *te
 	}
 }
 
-func TestSubstitutionOMSPairingRequestRequiresApprovedDirectMapping(t *testing.T) {
+func TestSubstitutionOMSPairingRequestUsesCombinationRecipe(t *testing.T) {
 	combination := inventory.SKUCombination{
 		SubstituteForSKU: "SKU-20",
-		Items:            []inventory.SKUCombinationItem{{WarehouseSKU: "SKU-10", Quantity: 2}},
+		Items: []inventory.SKUCombinationItem{
+			{WarehouseSKU: "SKU-10", Quantity: 1},
+			{WarehouseSKU: "CLIP", Quantity: 1},
+			{WarehouseSKU: "SKU-10", Quantity: 1},
+		},
 	}
 	request := substitutionOMSPairingRequest("arp", combination)
-	if request.Account != "arp" || request.PlatformSKU != "SKU-20" || len(request.Items) != 1 ||
-		request.Items[0].SystemSKU != "SKU-20" || request.Items[0].Quantity != 1 {
+	if request.Account != "arp" || request.PlatformSKU != "SKU-20" || len(request.Items) != 2 ||
+		request.Items[0].SystemSKU != "CLIP" || request.Items[0].Quantity != 1 ||
+		request.Items[1].SystemSKU != "SKU-10" || request.Items[1].Quantity != 2 {
 		t.Fatalf("unexpected pairing request: %#v", request)
 	}
 }

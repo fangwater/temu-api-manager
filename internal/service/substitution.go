@@ -647,10 +647,13 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 }
 
 func substitutionOMSPairingRequest(account string, combination inventory.SKUCombination) inventory.ProductPairingValidationRequest {
-	platformSKU := strings.TrimSpace(combination.SubstituteForSKU)
+	quantities := expandSubstitutionQuantities(combination, 1)
+	items := make([]inventory.ProductPairingValidationItem, 0, len(quantities))
+	for _, sku := range sortedKeys(quantities) {
+		items = append(items, inventory.ProductPairingValidationItem{SystemSKU: sku, Quantity: quantities[sku]})
+	}
 	return inventory.ProductPairingValidationRequest{
-		Account: account, PlatformSKU: platformSKU,
-		Items: []inventory.ProductPairingValidationItem{{SystemSKU: platformSKU, Quantity: 1}},
+		Account: account, PlatformSKU: strings.TrimSpace(combination.SubstituteForSKU), Items: items,
 	}
 }
 
