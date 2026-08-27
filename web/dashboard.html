@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Temu 订单履约与面单管理" />
     <title>Temu Fulfillment Console</title>
-    <link rel="stylesheet" href="./dashboard.css?v=20260823-1" />
+    <link rel="stylesheet" href="./dashboard.css?v=20260827-2" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -31,6 +31,7 @@
         <div class="brand"><span class="brand-mark">T</span><div><strong>Temu Fulfillment</strong><small>Order & Label Console</small></div></div>
         <nav class="nav" aria-label="主导航">
           <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
+          <button class="nav-button" data-view="substitutions"><svg><use href="#i-package"/></svg><span>可替换发货</span><b id="nav-substitution-count">0</b></button>
           <button class="nav-button" data-view="combined"><svg><use href="#i-orders"/></svg><span>可合并订单</span><b id="nav-combined-count">0</b></button>
           <button class="nav-button" data-view="split-quotes" hidden><svg><use href="#i-package"/></svg><span>拆包询价</span></button>
           <button class="nav-button" data-view="labels"><svg><use href="#i-download"/></svg><span>自动处理中</span><b id="nav-label-count">0</b></button>
@@ -74,6 +75,22 @@
               <div class="empty" id="orders-empty" hidden><svg><use href="#i-orders"/></svg><strong>没有待发货订单</strong><span>同步 Temu 后，符合条件的订单会显示在这里</span></div>
             </div>
             <div class="pager" id="orders-pager" hidden></div>
+          </section>
+
+          <section class="view" id="view-substitutions">
+            <div class="page-head"><div><h1>可替换发货</h1><p>原 SKU 与替代组合的实时库存及 Temu 面单成本</p></div><button class="secondary-button" id="refresh-substitutions"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="status-band">
+              <div><small>候选订单</small><strong id="metric-substitution-orders">0</strong></div>
+              <div><small>启用映射</small><strong id="metric-substitution-mappings">0</strong></div>
+              <div><small>当前店铺</small><strong class="compact" id="metric-substitution-shop">-</strong></div>
+              <div><small>查询时间</small><strong class="compact" id="metric-substitution-query">尚未查询</strong></div>
+            </div>
+            <div class="toolbar"><label class="search"><svg><use href="#i-search"/></svg><input id="substitution-search" placeholder="搜索订单号或 SKU" /></label><span class="table-note" id="substitution-total">共 0 条</span></div>
+            <div class="table-shell substitution-table">
+              <table><thead><tr><th>订单</th><th>直接发货</th><th>替代发货</th><th>最晚发货</th><th>订单状态</th><th>操作</th></tr></thead><tbody id="substitution-rows"></tbody></table>
+              <div class="empty" id="substitution-empty"><svg><use href="#i-package"/></svg><strong>没有可替换发货订单</strong><span>当前待发货订单未命中启用的替代映射</span></div>
+            </div>
+            <div class="pager" id="substitution-pager" hidden></div>
           </section>
 
           <section class="view" id="view-combined">
@@ -310,7 +327,7 @@
         <div class="order-summary" id="order-summary"></div>
         <section class="warehouse-check" id="warehouse-check">
           <div class="warehouse-check-head"><div><small>领星实时库存</small><h3 id="warehouse-check-title">正在连接领星 Go 服务</h3></div><button class="icon-button" id="refresh-warehouse-preview" type="button" title="重新查询库存" aria-label="重新查询库存"><svg><use href="#i-refresh"/></svg></button></div>
-          <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP美东、DPS004；ARP美西暂不启用</small></div></div>
+          <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP美东、DPS004、ARP美西</small></div></div>
           <div id="inventory-matrix" hidden>
             <div class="inventory-meta"><span id="inventory-rule">安全线</span><span id="inventory-time">查询时间</span></div>
             <div class="inventory-table"><table><thead><tr><th>SKU / 需发</th><th>DPS002</th><th>ARP美东</th><th>DPS004</th><th>ARP美西（空置）</th><th>规则结论</th></tr></thead><tbody id="inventory-preview-rows"></tbody></table></div>
@@ -336,6 +353,26 @@
           </div>
           <button class="danger-button full-button" id="purchase-button" type="button">确认并购买面单</button>
         </section>
+      </div>
+    </dialog>
+
+    <dialog class="substitution-dialog" id="substitution-dialog" aria-labelledby="substitution-dialog-title">
+      <form method="dialog" class="dialog-head"><div><small>实时面单成本</small><h2 id="substitution-dialog-title">直接与替代发货对比</h2></div><button class="icon-button" value="cancel" title="关闭" aria-label="关闭"><svg><use href="#i-close"/></svg></button></form>
+      <div class="dialog-body">
+        <div class="substitution-loading" id="substitution-loading"><svg><use href="#i-refresh"/></svg><strong>正在查询四仓库存与 Temu 物流价格</strong></div>
+        <div id="substitution-comparison" hidden>
+          <div class="order-summary substitution-summary">
+            <div class="summary-block"><small>Temu 父订单</small><strong id="substitution-order-no">-</strong></div>
+            <div class="summary-block"><small>替代映射</small><strong id="substitution-recipe">-</strong></div>
+            <div class="summary-block"><small>查询时间</small><strong id="substitution-quoted-at">-</strong></div>
+          </div>
+          <div class="substitution-price-grid">
+            <section class="substitution-price-card" id="substitution-direct"></section>
+            <section class="substitution-price-card replacement" id="substitution-replacement"></section>
+          </div>
+          <div class="dialog-actions"><button type="button" class="secondary-button" id="substitution-retry"><svg><use href="#i-refresh"/></svg>重新询价</button><button type="button" class="primary-button" id="substitution-close">关闭</button></div>
+        </div>
+        <div class="substitution-error" id="substitution-error" role="alert" hidden><span></span><button type="button" class="secondary-button" id="substitution-error-retry">重试</button></div>
       </div>
     </dialog>
 
@@ -381,6 +418,6 @@
       </form>
     </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260823-1" defer></script>
+    <script src="./dashboard.js?v=20260827-2" defer></script>
   </body>
 </html>

@@ -51,6 +51,8 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("GET /api/system/token-status", s.tokenStatus)
 	mux.HandleFunc("GET /api/system/store", s.storeIdentity)
 	mux.HandleFunc("GET /api/orders", s.listOrders)
+	mux.HandleFunc("GET /api/substitution-orders", s.listSubstitutionOrders)
+	mux.HandleFunc("POST /api/substitution-orders/{parentOrderSN}/quotes", s.compareSubstitutionPrices)
 	mux.HandleFunc("GET /api/combined-shipment-candidates", s.combinedShipmentCandidates)
 	mux.HandleFunc("GET /api/orders/history", s.listOrderHistory)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/detail", s.getOrderDetail)
@@ -393,15 +395,20 @@ func (s *Server) setWarehouseMapping(w http.ResponseWriter, r *http.Request) {
 		TemuWarehouseID  string `json:"temu_warehouse_id"`
 		OMSWarehouseCode string `json:"oms_warehouse_code"`
 		OMSAccount       string `json:"oms_account"`
+		Enabled          *bool  `json:"enabled"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	ctx, cancel := s.context(r)
 	defer cancel()
+	enabled := true
+	if input.Enabled != nil {
+		enabled = *input.Enabled
+	}
 	item, err := s.service.SetWarehouseMapping(
 		ctx, r.PathValue("omsKey"), input.TemuWarehouseID,
-		input.OMSWarehouseCode, input.OMSAccount,
+		input.OMSWarehouseCode, input.OMSAccount, enabled,
 	)
 	if err != nil {
 		s.fail(w, err)

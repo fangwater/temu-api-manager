@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS public.temu_warehouse_mappings (
 logical_warehouse_key text NOT NULL DEFAULT '',
     oms_warehouse_code text NOT NULL DEFAULT '',
     oms_account text NOT NULL,
+    enabled boolean NOT NULL DEFAULT true,
     CONSTRAINT temu_warehouse_mappings_oms_account_check CHECK (oms_account IN ('dps', 'arp')),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -124,7 +125,8 @@ logical_warehouse_key text NOT NULL DEFAULT '',
 ALTER TABLE public.temu_warehouse_mappings
 ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '',
 ADD COLUMN IF NOT EXISTS logical_warehouse_key text NOT NULL DEFAULT '',
-ADD COLUMN IF NOT EXISTS oms_account text;
+ADD COLUMN IF NOT EXISTS oms_account text,
+ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
 
 UPDATE public.temu_warehouse_mappings SET
     oms_warehouse_code = CASE oms_warehouse_key

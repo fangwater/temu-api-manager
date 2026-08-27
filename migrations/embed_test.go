@@ -87,6 +87,12 @@ func TestInitSQLIncludesSharedShopWarehouseStorage(t *testing.T) {
 	}
 }
 
+func TestInitSQLIncludesConfigurableWarehouseMappingState(t *testing.T) {
+	if !strings.Contains(InitSQL, "ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true") {
+		t.Fatal("InitSQL is missing configurable warehouse mapping state")
+	}
+}
+
 func TestInitSQLIncludesShopWarehouseCarrierPolicies(t *testing.T) {
 	for _, fragment := range []string{"public.temu_carrier_policies", "shop_code text NOT NULL", "oms_warehouse_key text NOT NULL", "PRIMARY KEY (shop_code, oms_warehouse_key, carrier_code)"} {
 		if !strings.Contains(InitSQL, fragment) {

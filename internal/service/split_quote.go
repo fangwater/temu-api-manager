@@ -181,9 +181,6 @@ func (s *Service) QuoteSplitPlan(ctx context.Context, request SplitQuoteRequest)
 	if warehouseKey == "" {
 		return SplitQuoteResult{}, errors.New("warehouse_key is required")
 	}
-	if reason := disabledOMSWarehouseReason(warehouseKey); reason != "" {
-		return SplitQuoteResult{}, errors.New(reason)
-	}
 	if err := s.validateOrderWarehouseAllowed(ctx, order, warehouseKey); err != nil {
 		return SplitQuoteResult{}, err
 	}

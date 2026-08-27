@@ -669,11 +669,8 @@ func (s *Service) SyncWarehouses(ctx context.Context) ([]model.Warehouse, []mode
 func (s *Service) ListWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
 	return s.store.ListWarehouses(ctx)
 }
-func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string) (model.WarehouseMapping, error) {
+func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string, enabled bool) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
-	if reason := disabledOMSWarehouseReason(omsKey); reason != "" {
-		return model.WarehouseMapping{}, errors.New(reason)
-	}
 	omsWarehouseCode = strings.TrimSpace(omsWarehouseCode)
 	if omsWarehouseCode == "" {
 		return model.WarehouseMapping{}, errors.New("oms_warehouse_code is required")
@@ -682,17 +679,10 @@ func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWa
 	if !ok {
 		return model.WarehouseMapping{}, errors.New("oms_account must be dps or arp")
 	}
-	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode, omsAccount)
+	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode, omsAccount, enabled)
 }
 func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) error {
 	return s.store.DeleteWarehouseMapping(ctx, omsKey)
-}
-
-func disabledOMSWarehouseReason(omsKey string) string {
-	if strings.ToUpper(strings.TrimSpace(omsKey)) == "ARP_WEST" {
-		return "ARP美西暂不启用（空置），不能用于自动发货"
-	}
-	return ""
 }
 
 var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
@@ -1066,11 +1056,6 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 			option.WarehouseName = selection.WarehouseName
 			option.Reason = selection.Reason
 			option.Recommended = defaultErr == nil && defaultSelection.WarehouseKey == key
-			if reason := disabledOMSWarehouseReason(key); reason != "" {
-				option.Error = reason
-				preview.Regions = append(preview.Regions, option)
-				continue
-			}
 			temuWarehouse, mappingErr := s.store.MappedWarehouse(ctx, key)
 			switch {
 			case errors.Is(mappingErr, pgx.ErrNoRows):
@@ -1197,10 +1182,6 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		selected, selectErr := inventory.SelectWarehouse(decision, selectionRegion, quantities, key)
 		if selectErr != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", key, selectErr))
-			continue
-		}
-		if reason := disabledOMSWarehouseReason(selected.WarehouseKey); reason != "" {
-			problems = append(problems, errors.New(reason))
 			continue
 		}
 		mapped, mapErr := s.store.MappedWarehouse(ctx, selected.WarehouseKey)

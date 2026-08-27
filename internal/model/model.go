@@ -150,6 +150,7 @@ type WarehouseMapping struct {
 	OMSAccount       string    `json:"oms_account"`
 	TemuWarehouseID  string    `json:"temu_warehouse_id"`
 	TemuName         string    `json:"temu_warehouse_name"`
+	Enabled          bool      `json:"enabled"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 

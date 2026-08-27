@@ -458,15 +458,6 @@ func TestShippingRequestsForceNoSignature(t *testing.T) {
 		t.Fatal("signature-required channel must never be submitted")
 	}
 }
-func TestDisabledOMSWarehouseReason(t *testing.T) {
-	if reason := disabledOMSWarehouseReason("arp_west"); reason == "" {
-		t.Fatal("ARP_WEST must be disabled while the warehouse is vacant")
-	}
-	if reason := disabledOMSWarehouseReason("DPS004"); reason != "" {
-		t.Fatalf("DPS004 should remain enabled, got %q", reason)
-	}
-}
-
 func TestPackageSpecFromResolutionConvertsMetricToUSImperial(t *testing.T) {
 	got, err := packageSpecFromResolution(inventory.PackageResolution{
 		Complete: true,

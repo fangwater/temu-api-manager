@@ -442,7 +442,7 @@ ORDER BY w.warehouse_name
 	}
 	mrows, err := p.pool.Query(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.enabled,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$1 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -457,7 +457,7 @@ ORDER BY m.oms_warehouse_key
 	mappings := []model.WarehouseMapping{}
 	for mrows.Next() {
 		var m model.WarehouseMapping
-		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.OMSAccount, &m.UpdatedAt); err != nil {
+		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.OMSAccount, &m.Enabled, &m.UpdatedAt); err != nil {
 			return nil, nil, err
 		}
 		mappings = append(mappings, m)
@@ -465,7 +465,7 @@ ORDER BY m.oms_warehouse_key
 	return warehouses, mappings, mrows.Err()
 }
 
-func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string) (model.WarehouseMapping, error) {
+func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string, enabled bool) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
 	temuID = strings.TrimSpace(temuID)
 	logicalKey := omsKey
@@ -477,15 +477,16 @@ LIMIT 1
 `, temuID, p.shopCode).Scan(&logicalKey)
 	_, err := p.pool.Exec(ctx, `
 INSERT INTO public.temu_warehouse_mappings(
-oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,oms_account,logical_warehouse_key
-) VALUES($1,$2,$3,$4,$5)
+oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,oms_account,logical_warehouse_key,enabled
+) VALUES($1,$2,$3,$4,$5,$6)
 ON CONFLICT(oms_warehouse_key) DO UPDATE SET
 temu_warehouse_id=EXCLUDED.temu_warehouse_id,
 oms_warehouse_code=EXCLUDED.oms_warehouse_code,
 oms_account=EXCLUDED.oms_account,
 logical_warehouse_key=EXCLUDED.logical_warehouse_key,
+enabled=EXCLUDED.enabled,
 updated_at=now()
-`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), strings.ToLower(strings.TrimSpace(omsAccount)), logicalKey)
+`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), strings.ToLower(strings.TrimSpace(omsAccount)), logicalKey, enabled)
 	if err != nil {
 		return model.WarehouseMapping{}, err
 	}
@@ -501,16 +502,16 @@ func (p *Postgres) WarehouseMapping(ctx context.Context, omsKey string) (model.W
 	var m model.WarehouseMapping
 	err := p.pool.QueryRow(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.enabled,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
 LEFT JOIN public.temu_warehouses resolved ON resolved.warehouse_id=sw.warehouse_id
 LEFT JOIN public.temu_warehouses canonical ON canonical.warehouse_id=m.temu_warehouse_id
 WHERE m.oms_warehouse_key=$1
-`, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(
+	`, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(
 		&m.OMSKey, &m.TemuWarehouseID, &m.TemuName,
-		&m.OMSWarehouseCode, &m.OMSAccount, &m.UpdatedAt,
+		&m.OMSWarehouseCode, &m.OMSAccount, &m.Enabled, &m.UpdatedAt,
 	)
 	return m, err
 }
@@ -525,6 +526,7 @@ LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
 JOIN public.temu_warehouses w ON w.warehouse_id=coalesce(sw.warehouse_id,m.temu_warehouse_id)
 WHERE m.oms_warehouse_key=$1
+AND m.enabled
 `, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(&w.ID, &w.Name, &w.RegionID, &w.EnableBuyShippingLabel, &w.Default, &w.ManagementType, &w.SyncedAt)
 	return w, err
 }

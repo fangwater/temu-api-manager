@@ -75,7 +75,7 @@ Before every automatic submission, the server requires:
 
 1. The selected Temu shop has one confirmed shipment for the parent order.
 2. The shipment has a tracking number and at least one package number.
-3. The warehouse mapping still matches the Temu warehouse used to buy the
+3. The enabled warehouse mapping still matches the Temu warehouse used to buy the
    label.
 4. The configured OMS account returns exactly one same-number platform order
    in status `0`.

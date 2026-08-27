@@ -103,6 +103,26 @@ func TestResolvePackageSpecsUsesWarehouseManagerEndpoint(t *testing.T) {
 	}
 }
 
+func TestListActiveSKUCombinationsUsesWarehouseManagerEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/packing/combinations" || request.URL.Query().Get("status") != "active" {
+			t.Errorf("unexpected request: %s %s", request.Method, request.URL.String())
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":[{"id":2,"name":"20pcs replacement","substitute_for_sku":"SKU-20","length_cm":43,"width_cm":33,"height_cm":8,"weight_kg":1.14,"enabled":true,"items":[{"warehouse_sku":"SKU-10","quantity":2}]}]}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	items, err := client.ListActiveSKUCombinations(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].SubstituteForSKU != "SKU-20" || len(items[0].Items) != 1 || items[0].Items[0].Quantity != 2 {
+		t.Fatalf("unexpected combinations: %#v", items)
+	}
+}
+
 func TestQueryForShopSendsShopIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/temu/warehouse-availability/query" {

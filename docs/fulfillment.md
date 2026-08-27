@@ -93,7 +93,7 @@ parameter is optional. The response includes the Temu package number, the
 last-mile `trackingNum`, and `trackingInfo` events with
 `logisticsUpdatedAt`, `logisticsStatus`, and `statusText`.
 
-"ARP_WEST" is temporarily disabled because the warehouse is vacant. Its former PG1955 mapping must not be used; preview and quote operations reject this warehouse even if it is mapped again.
+Every warehouse mapping has an `enabled` switch. Disabled mappings remain visible for configuration and historical reconciliation but are excluded from new previews and quotes.
 Warehouse mapping, manual-review status changes, Buy Label purchase, and final shipment confirmation require
 `X-Temu-Operation-Key`. Carrier-policy changes do not require this key. The browser keeps this key only in session storage.
 

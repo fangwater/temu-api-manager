@@ -5,6 +5,12 @@ const defaultStore = { code: "panda-homes", name: "PANDA HOMES", default: true }
 const requestedShopCode = new URLSearchParams(window.location.search).get("shop");
 const savedShopCode = requestedShopCode || sessionStorage.getItem("temu_selected_shop") || defaultStore.code;
 const state = { store: { ...defaultStore, code: savedShopCode }, shops: [], orders: [], orderMeta: {}, manualOrders: [], manualMeta: {}, history: [], historyMeta: {}, labelShipments: [], labelMeta: {}, exceptionShipments: [], exceptionMeta: {}, shipments: [], shipmentMeta: {}, pages: { orders: 1, manual: 1, labels: 1, exceptions: 1, ledger: 1, history: 1, skuRules: 1, inventoryThresholds: 1 }, pageSize: 30, warehouses: [], mappings: [], bulkBatch: null, currentOrder: null, recoveryShipment: null, warehousePreview: null, quote: null, quoteTimer: 0, quoteSequence: 0, quoteController: null, warehouseController: null, selectedChannelId: 0, operationKey: "" };
+state.substitutionOrders = [];
+state.substitutionMeta = {};
+state.substitutionParentOrderSN = "";
+state.substitutionController = null;
+state.substitutionRequestSequence = 0;
+state.pages.substitutions = 1;
 state.omsPlatformOrders = [];
 state.omsPlatformOrderMeta = {};
 state.omsPlatformOrderRequestSequence = 0;
@@ -288,6 +294,120 @@ function renderOrders() {
   renderPager("#orders-pager", state.orderMeta, "orders", loadOrders);
   $$('[data-fulfill]').forEach((button) => button.addEventListener("click", () => openFulfillment(button.dataset.fulfill)));
   $$('[data-open-manual]').forEach((button) => button.addEventListener("click", () => { switchView("manual"); loadManualOrders(button.dataset.openManual); }));
+}
+
+async function loadSubstitutionOrders() {
+  const query = $("#substitution-search").value.trim();
+  const params = new URLSearchParams({ page: state.pages.substitutions, page_size: state.pageSize });
+  if (query) params.set("q", query);
+  try {
+    const payload = await api(`/substitution-orders?${params}`);
+    if (adjustEmptyPage(payload.meta, "substitutions", loadSubstitutionOrders)) return;
+    state.substitutionOrders = payload.data || [];
+    state.substitutionMeta = payload.meta || {};
+    renderSubstitutionOrders();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function substitutionRecipe(match) {
+  return (match?.combination?.items || []).map((item) => `${item.warehouse_sku} × ${item.quantity * match.quantity}`).join(" + ");
+}
+
+function renderSubstitutionOrders() {
+  const items = state.substitutionOrders;
+  $("#substitution-rows").innerHTML = items.map((candidate) => {
+    const order = candidate.order || {};
+    const direct = (candidate.matches || []).map((match) => `<span class="sku-line"><b>${escapeHtml(match.warehouse_sku)}</b><span>× ${match.quantity}</span></span>`).join("");
+    const replacement = (candidate.matches || []).map((match) => `<span class="substitution-recipe-line"><strong>${escapeHtml(match.combination.name)}</strong><small>${escapeHtml(substitutionRecipe(match))}</small></span>`).join("");
+    const running = order.auto_fulfillment && !["failed", "completed", "skipped"].includes(order.auto_fulfillment.status);
+    const status = running ? "自动任务处理中" : order.manual_review?.active ? "人工队列" : "待发货";
+    return `<tr>
+      <td><div class="order-id"><strong>${escapeHtml(order.parent_order_sn)}</strong><small>更新 ${formatTime(order.update_time)}</small></div></td>
+      <td><div class="sku-stack">${direct || "-"}</div></td>
+      <td><div class="substitution-recipe-stack">${replacement || "-"}</div></td>
+      <td><div class="order-id"><strong>${relativeDeadline(order.expect_ship_latest_time)}</strong><small>${formatTime(order.expect_ship_latest_time)}</small></div></td>
+      <td><span class="status-badge ${running || order.manual_review?.active ? "pending" : ""}">${escapeHtml(status)}</span></td>
+      <td><button class="row-action substitution-quote-action" data-substitution-quote="${escapeHtml(order.parent_order_sn)}" ${running ? "disabled" : ""}>询价对比</button></td>
+    </tr>`;
+  }).join("");
+  const total = Number(state.substitutionMeta.total || 0);
+  $("#substitution-empty").hidden = items.length > 0;
+  $("#substitution-total").textContent = `共 ${total} 条`;
+  $("#nav-substitution-count").textContent = total;
+  $("#metric-substitution-orders").textContent = total;
+  $("#metric-substitution-mappings").textContent = Number(state.substitutionMeta.active_substitutions || 0);
+  $("#metric-substitution-shop").textContent = state.store.name || state.store.code;
+  $("#metric-substitution-query").textContent = formatTime(state.substitutionMeta.queried_at);
+  renderPager("#substitution-pager", state.substitutionMeta, "substitutions", loadSubstitutionOrders);
+  $$('[data-substitution-quote]').forEach((button) => button.addEventListener("click", () => openSubstitutionComparison(button.dataset.substitutionQuote)));
+}
+
+function formatSubstitutionMoney(quote) {
+  if (!quote || !Number.isFinite(Number(quote.amount))) return "";
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: quote.currency || "USD" }).format(Number(quote.amount));
+  } catch (_) {
+    return `${quote.currency || "USD"} ${Number(quote.amount).toFixed(2)}`;
+  }
+}
+
+function renderSubstitutionPriceOption(option, title) {
+  const available = Boolean(option?.available && option.best_quote);
+  const best = option?.best_quote;
+  const unavailableLabel = title === "直接发货" ? "无法直发" : "无法替代";
+  const items = (option?.items || []).map((item) => `<span>${escapeHtml(item.warehouse_sku)} × ${item.quantity}</span>`).join("");
+  const quotes = (option?.quotes || []).map((quote) => `<div class="substitution-warehouse-price"><div><strong>${escapeHtml(quote.warehouse_name || quote.warehouse_key)}</strong><small>${escapeHtml(quote.shipping_company_name)} · ${escapeHtml(quote.ship_logistics_type || "-")}</small></div><b>${escapeHtml(formatSubstitutionMoney(quote))}</b></div>`).join("");
+  return `<header><div><small>${title === "直接发货" ? "原 SKU" : "替代组合"}</small><h3>${title}</h3></div><span class="status-badge ${available ? "" : "neutral"}">${available ? "可发货" : unavailableLabel}</span></header>
+    <div class="substitution-option-items">${items}</div>
+    <div class="substitution-best-price ${available ? "" : "empty"}"><small>最低面单成本</small><strong>${available ? escapeHtml(formatSubstitutionMoney(best)) : ""}</strong><span>${available ? `${escapeHtml(best.warehouse_name || best.warehouse_key)} · ${escapeHtml(best.shipping_company_name)}` : escapeHtml(option?.reason || "")}</span></div>
+    <div class="substitution-warehouse-prices">${quotes}</div>`;
+}
+
+function renderSubstitutionComparison(data) {
+  const combination = data.combination || {};
+  const originalQuantity = data.direct?.items?.[0]?.quantity || 0;
+  const recipe = (combination.items || []).map((item) => `${item.warehouse_sku} × ${item.quantity * originalQuantity}`).join(" + ");
+  $("#substitution-order-no").textContent = data.parent_order_sn || "-";
+  $("#substitution-recipe").textContent = recipe || combination.name || "-";
+  $("#substitution-quoted-at").textContent = formatTime(data.queried_at);
+  $("#substitution-direct").innerHTML = renderSubstitutionPriceOption(data.direct, "直接发货");
+  $("#substitution-replacement").innerHTML = renderSubstitutionPriceOption(data.replacement, "替代发货");
+  $("#substitution-loading").hidden = true;
+  $("#substitution-error").hidden = true;
+  $("#substitution-comparison").hidden = false;
+}
+
+async function loadSubstitutionComparison() {
+  const parentOrderSN = state.substitutionParentOrderSN;
+  if (!parentOrderSN) return;
+  state.substitutionController?.abort();
+  const controller = new AbortController();
+  state.substitutionController = controller;
+  const sequence = ++state.substitutionRequestSequence;
+  $("#substitution-loading").hidden = false;
+  $("#substitution-comparison").hidden = true;
+  $("#substitution-error").hidden = true;
+  try {
+    const { data } = await api(`/substitution-orders/${encodeURIComponent(parentOrderSN)}/quotes`, { method: "POST", signal: controller.signal, timeoutMs: 60000 });
+    if (sequence !== state.substitutionRequestSequence || parentOrderSN !== state.substitutionParentOrderSN) return;
+    renderSubstitutionComparison(data);
+  } catch (error) {
+    if (error.code === "REQUEST_ABORTED" || sequence !== state.substitutionRequestSequence) return;
+    $("#substitution-loading").hidden = true;
+    $("#substitution-error").hidden = false;
+    $("#substitution-error span").textContent = error.code === "REQUEST_TIMEOUT" ? "实时物流询价超时，请重试" : error.message;
+  } finally {
+    if (state.substitutionController === controller) state.substitutionController = null;
+  }
+}
+
+function openSubstitutionComparison(parentOrderSN) {
+  state.substitutionParentOrderSN = parentOrderSN;
+  $("#substitution-dialog-title").textContent = `发货成本对比 · ${parentOrderSN}`;
+  $("#substitution-dialog").showModal();
+  loadSubstitutionComparison();
 }
 
 function combinedOrderStatusText(status) {
@@ -650,7 +770,7 @@ const omsWarehouses = [
   { key: "DPS002", name: "DPS002", region: "美东", code: "DPSNY002" },
   { key: "ARP_EAST", name: "ARP美东", region: "美东", code: "HYTX30" },
   { key: "DPS004", name: "DPS004", region: "美西", code: "DPSCA004" },
-  { key: "ARP_WEST", name: "ARP美西", region: "美西", code: "ARPCA01", disabled: true },
+  { key: "ARP_WEST", name: "ARP美西", region: "美西", code: "ARPCA01" },
 ];
 
 const omsAccounts = [
@@ -662,16 +782,13 @@ function renderWarehouses() {
   const enabled = state.warehouses.filter((warehouse) => warehouse.enable_buy_shipping_label);
   const mappingByKey = Object.fromEntries(state.mappings.map((mapping) => [mapping.oms_warehouse_key, mapping]));
   $("#warehouse-mappings").innerHTML = omsWarehouses.map((warehouse) => {
-    if (warehouse.disabled) {
-      return `<div class="mapping-row disabled"><div class="mapping-name"><strong>${warehouse.name}</strong><span>${warehouse.region} · 领星库存仓</span></div><div class="mapping-disabled"><strong>暂不启用</strong><span>仓库空置，PG1955 错误映射已移除</span></div></div>`;
-    }
     const mapping = mappingByKey[warehouse.key] || {};
     return `<div class="mapping-row">
       <div class="mapping-name"><strong>${warehouse.name}</strong><span>${warehouse.region} · 业务仓标识</span></div>
       <label><span>领星账户</span><select data-oms-account="${warehouse.key}"><option value="">请选择账户</option>${omsAccounts.map((account) => `<option value="${account.key}" ${mapping.oms_account === account.key ? "selected" : ""}>${account.label}</option>`).join("")}</select></label>
       <label><span>领星仓库代码</span><input data-oms-code="${warehouse.key}" value="${escapeHtml(mapping.oms_warehouse_code || warehouse.code)}" /></label>
       <label><span>Temu Buy Label 仓库</span><select data-mapping-select="${warehouse.key}"><option value="">请选择仓库</option>${enabled.map((item) => `<option value="${escapeHtml(item.warehouse_id)}" ${mapping.temu_warehouse_id === item.warehouse_id ? "selected" : ""}>${escapeHtml(item.warehouse_name)} · ${escapeHtml(item.warehouse_id)}</option>`).join("")}</select></label>
-      <div class="mapping-readonly"><small>领星同步</small><strong>只读自动查询</strong></div>
+      <label class="mapping-enabled"><span>自动发货</span><span class="policy-switch"><input type="checkbox" data-mapping-enabled="${warehouse.key}" ${mapping.enabled !== false ? "checked" : ""} aria-label="启用 ${escapeHtml(warehouse.name)} 自动发货"><span></span></span></label>
       <button class="secondary-button" data-save-mapping="${warehouse.key}">保存</button>
     </div>`;
   }).join("");
@@ -687,7 +804,7 @@ function carrierPolicyGroup(warehouseKey) {
 function renderCarrierPolicies() {
   const container = $("#carrier-policy-grid");
   $("#carrier-policy-shop").textContent = state.store.name || state.store.code;
-  container.innerHTML = omsWarehouses.filter((warehouse) => !warehouse.disabled).map((warehouse) => {
+  container.innerHTML = omsWarehouses.map((warehouse) => {
     const group = carrierPolicyGroup(warehouse.key) || { warehouse_key: warehouse.key, carriers: [] };
     const carriers = [...(group.carriers || [])].sort((left, right) => left.priority - right.priority);
     const enabledCount = carriers.filter((carrier) => carrier.enabled).length;
@@ -761,7 +878,7 @@ async function loadSKUWarehouseRules() {
 }
 
 function renderSKUWarehouseRules() {
-  const configurableWarehouses = omsWarehouses.filter((warehouse) => !warehouse.disabled);
+  const configurableWarehouses = omsWarehouses;
   const rows = $("#sku-rule-rows");
   rows.innerHTML = state.skuWarehouseRules.map((rule) => {
     const disabled = new Set(rule.disabled_warehouse_keys || []);
@@ -947,6 +1064,7 @@ async function saveMapping(key) {
   const select = $(`[data-mapping-select="${key}"]`);
   const omsCode = $(`[data-oms-code="${key}"]`);
   const omsAccount = $(`[data-oms-account="${key}"]`);
+  const mappingEnabled = $(`[data-mapping-enabled="${key}"]`);
   if (!select.value) return toast("请选择 Temu 仓库", true);
   if (!omsCode.value.trim()) return toast("请填写领星仓库代码", true);
   if (!omsAccount.value) return toast("请选择领星账户", true);
@@ -958,6 +1076,7 @@ async function saveMapping(key) {
         temu_warehouse_id: select.value,
         oms_warehouse_code: omsCode.value.trim(),
         oms_account: omsAccount.value,
+        enabled: mappingEnabled.checked,
       }),
     });
     toast(`${key} 仓库配置已保存`); await loadWarehouses();
@@ -1220,7 +1339,7 @@ function renderWarehousePreview() {
   const readyOptions = (preview.regions || []).filter((option) => option.ready);
   const selectedOption = readyOptions.find((option) => option.recommended) || readyOptions[0];
   $("#warehouse-region-options").innerHTML = (preview.regions || []).map((option) => {
-    const mappingText = option.warehouse_key === "ARP_WEST" ? "暂不启用" : option.mapping?.ready ? "Temu：" + option.mapping.warehouse_name : "Temu 仓未映射";
+    const mappingText = option.mapping?.ready ? "Temu：" + option.mapping.warehouse_name : "Temu 仓未映射或已停用";
     const checked = option === selectedOption;
     return `<label class="warehouse-region-choice ${option.ready ? "ready" : "blocked"}">
       <input type="radio" name="warehouse_key" value="${escapeHtml(option.warehouse_key || "")}" data-region="${escapeHtml(option.region)}" form="quote-form" ${checked ? "checked" : ""} ${option.ready ? "required" : "disabled"} />
@@ -1978,9 +2097,10 @@ function forgetOperationKey() { state.operationKey = ""; sessionStorage.removeIt
 function switchView(view) {
   $$(".view").forEach((element) => element.classList.toggle("active", element.id === `view-${view}`));
   $$(".nav-button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  $("#crumb-current").textContent = ({ orders: "待发货订单", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "inventory-thresholds": "库存安全线", "tracking-statuses": "物流状态助手" })[view];
+  $("#crumb-current").textContent = ({ orders: "待发货订单", substitutions: "可替换发货", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "inventory-thresholds": "库存安全线", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
+  if (view === "substitutions") loadSubstitutionOrders();
   if (view === "combined") loadCombinedShipmentCandidates();
   if (view === "labels") loadShipmentQueue("labels");
   if (view === "exceptions") loadShipmentQueue("exceptions");
@@ -2015,6 +2135,12 @@ $("#backdrop").addEventListener("click", () => { $("#sidebar").classList.remove(
 $("#sync-orders").addEventListener("click", syncOrders);
 $("#bulk-fulfill").addEventListener("click", startBulkFulfillment);
 $("#refresh-combined").addEventListener("click", loadCombinedShipmentCandidates);
+$("#refresh-substitutions").addEventListener("click", loadSubstitutionOrders);
+$("#substitution-search").addEventListener("input", () => { state.pages.substitutions = 1; clearTimeout(state.substitutionSearchTimer); state.substitutionSearchTimer = setTimeout(loadSubstitutionOrders, 250); });
+$("#substitution-retry").addEventListener("click", loadSubstitutionComparison);
+$("#substitution-error-retry").addEventListener("click", loadSubstitutionComparison);
+$("#substitution-close").addEventListener("click", () => $("#substitution-dialog").close());
+$("#substitution-dialog").addEventListener("close", () => { state.substitutionRequestSequence += 1; state.substitutionController?.abort(); state.substitutionController = null; state.substitutionParentOrderSN = ""; });
 $("#restart-bulk").addEventListener("click", restartBulkFulfillment);
 $("#refresh-manual").addEventListener("click", () => loadManualOrders());
 $("#export-manual").addEventListener("click", exportManualOrders);
@@ -2080,7 +2206,7 @@ $("#shop-select").addEventListener("change", (event) => {
 async function initialize() {
   renderTrackingStatusMappings();
   await loadShops();
-  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment(), loadOMSPlatformOrders()]);
+  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadSubstitutionOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment(), loadOMSPlatformOrders()]);
 }
 
 void initialize();

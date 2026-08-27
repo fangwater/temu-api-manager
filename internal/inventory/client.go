@@ -102,6 +102,25 @@ type PackageSpecUpdate struct {
 	WeightKG float64 `json:"weight_kg"`
 }
 
+type SKUCombinationItem struct {
+	WarehouseSKU string `json:"warehouse_sku"`
+	ProductName  string `json:"product_name,omitempty"`
+	Quantity     int    `json:"quantity"`
+}
+
+type SKUCombination struct {
+	ID               int64                `json:"id"`
+	Name             string               `json:"name"`
+	SubstituteForSKU string               `json:"substitute_for_sku"`
+	LengthCM         float64              `json:"length_cm"`
+	WidthCM          float64              `json:"width_cm"`
+	HeightCM         float64              `json:"height_cm"`
+	WeightKG         float64              `json:"weight_kg"`
+	Note             string               `json:"note,omitempty"`
+	Enabled          bool                 `json:"enabled"`
+	Items            []SKUCombinationItem `json:"items"`
+}
+
 type PackageSpecResolveRequest struct {
 	WarehouseSKU string `json:"warehouse_sku"`
 	Quantity     int    `json:"quantity"`
@@ -297,6 +316,18 @@ func (c *Client) UpdatePackageSpec(ctx context.Context, warehouseSKU string, upd
 	return result.Data, nil
 }
 
+func (c *Client) ListActiveSKUCombinations(ctx context.Context) ([]SKUCombination, error) {
+	endpoint, err := c.managerEndpoint("/packing/combinations?status=active")
+	if err != nil {
+		return nil, err
+	}
+	items := make([]SKUCombination, 0)
+	if err := c.doJSON(ctx, http.MethodGet, endpoint, nil, "", "", &items); err != nil {
+		return nil, fmt.Errorf("list active SKU substitutions: %w", err)
+	}
+	return items, nil
+}
+
 func (c *Client) managerEndpoint(path string) (string, error) {
 	const decisionSuffix = "/temu/warehouse-availability/query"
 	if !strings.HasSuffix(c.url, decisionSuffix) {
@@ -306,14 +337,14 @@ func (c *Client) managerEndpoint(path string) (string, error) {
 }
 
 type ShopInventoryThresholds struct {
-	Platform       string  `json:"platform"`
-	ShopCode       string  `json:"shop_code"`
-	ShopName       string  `json:"shop_name"`
-	Enabled        bool    `json:"enabled"`
-	EastThreshold  float64 `json:"east_threshold"`
-	WestThreshold  float64 `json:"west_threshold"`
-	TotalThreshold float64 `json:"total_threshold"`
-	Customized     bool    `json:"customized"`
+	Platform       string    `json:"platform"`
+	ShopCode       string    `json:"shop_code"`
+	ShopName       string    `json:"shop_name"`
+	Enabled        bool      `json:"enabled"`
+	EastThreshold  float64   `json:"east_threshold"`
+	WestThreshold  float64   `json:"west_threshold"`
+	TotalThreshold float64   `json:"total_threshold"`
+	Customized     bool      `json:"customized"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
