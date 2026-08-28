@@ -99,6 +99,12 @@ func (s *Service) ListSubstitutionOrders(ctx context.Context, query string, page
 		if orderErr != nil {
 			return nil, 0, 0, orderErr
 		}
+		job, jobErr := s.store.GetAutoFulfillment(ctx, parent)
+		if jobErr == nil {
+			order.AutoFulfillment = &job
+		} else if !errors.Is(jobErr, pgx.ErrNoRows) {
+			return nil, 0, 0, jobErr
+		}
 		match, ok := singleUnitSubstitutionMatch(order, bySKU)
 		if !ok {
 			continue

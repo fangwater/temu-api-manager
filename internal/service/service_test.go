@@ -146,6 +146,30 @@ func TestTemporaryFulfillmentError(t *testing.T) {
 	}
 }
 
+func TestResolveMissingOMSPlatformOrderValidatesTerminalInput(t *testing.T) {
+	manager := &Service{}
+	tests := []struct {
+		name   string
+		parent string
+		status string
+		note   string
+		want   string
+	}{
+		{name: "missing parent", status: "cancelled", note: "已核实", want: "parent order number is required"},
+		{name: "invalid status", parent: "PO-1", status: "done", note: "已核实", want: "请选择有效的人工终态"},
+		{name: "missing note", parent: "PO-1", status: "cancelled", want: "人工终态备注不能为空"},
+		{name: "long note", parent: "PO-1", status: "other", note: strings.Repeat("字", 501), want: "人工终态备注不能超过 500 个字符"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := manager.ResolveMissingOMSPlatformOrder(context.Background(), test.parent, test.status, test.note)
+			if err == nil || err.Error() != test.want {
+				t.Fatalf("got error %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestFulfillmentErrorStatus(t *testing.T) {
 	if got := fulfillmentErrorStatus(context.DeadlineExceeded, "confirming"); got != "confirming" {
 		t.Fatalf("timeout must remain retryable, got %q", got)

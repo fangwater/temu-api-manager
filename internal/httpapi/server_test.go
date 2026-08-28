@@ -231,14 +231,14 @@ func TestOMSPlatformOrdersRequiresSupportedStatus(t *testing.T) {
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s returned %d, want %d", path, response.Code, http.StatusBadRequest)
 		}
-		if !strings.Contains(response.Body.String(), "status must be missing, 0, 1, 2, or 3") {
+		if !strings.Contains(response.Body.String(), "status must be terminal, missing, 0, 1, 2, or 3") {
 			t.Fatalf("%s returned unexpected body: %s", path, response.Body.String())
 		}
 	}
 }
 
 func TestParseOMSPlatformOrderStatus(t *testing.T) {
-	tests := map[string]int{"missing": -1, " MISSING ": -1, "0": 0, "3": 3}
+	tests := map[string]int{"terminal": -2, " TERMINAL ": -2, "missing": -1, " MISSING ": -1, "0": 0, "3": 3}
 	for value, want := range tests {
 		got, err := parseOMSPlatformOrderStatus(value)
 		if err != nil || got != want {

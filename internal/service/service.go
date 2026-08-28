@@ -2077,7 +2077,7 @@ func (s *Service) CheckOMSSync(ctx context.Context, id string) (model.Shipment, 
 		return shipment, err
 	}
 	if !started {
-		if current.Status == "verified" || current.Status == "querying" {
+		if current.Status == "verified" || current.Status == "terminal" || current.Status == "querying" {
 			return s.store.GetShipment(ctx, shipment.ID)
 		}
 		if current.Status == "manual_required" {
@@ -2169,6 +2169,10 @@ type AutoFulfillmentAcceptance struct {
 }
 
 func (s *Service) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN string) (AutoFulfillmentAcceptance, error) {
+	return s.enqueueAutoFulfillment(ctx, parentOrderSN, model.FulfillmentModeDirect)
+}
+
+func (s *Service) enqueueAutoFulfillment(ctx context.Context, parentOrderSN, fulfillmentMode string) (AutoFulfillmentAcceptance, error) {
 	parentOrderSN = strings.TrimSpace(parentOrderSN)
 	if parentOrderSN == "" {
 		return AutoFulfillmentAcceptance{}, errors.New("parent order number is required")
@@ -2180,14 +2184,18 @@ func (s *Service) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN stri
 	if !order.Open || order.Status != 2 {
 		return AutoFulfillmentAcceptance{}, errOrderNoLongerAwaitingShipment
 	}
-	if reason := manualOrderReason(order); reason != "" {
-		return AutoFulfillmentAcceptance{}, errors.New(reason)
+	if fulfillmentMode == model.FulfillmentModeDirect {
+		if reason := manualOrderReason(order); reason != "" {
+			return AutoFulfillmentAcceptance{}, errors.New(reason)
+		}
+	} else if fulfillmentMode != model.FulfillmentModeSubstitution {
+		return AutoFulfillmentAcceptance{}, errors.New("invalid fulfillment mode")
 	}
 	previous, previousErr := s.store.GetAutoFulfillment(ctx, parentOrderSN)
 	if previousErr != nil && !errors.Is(previousErr, pgx.ErrNoRows) {
 		return AutoFulfillmentAcceptance{}, previousErr
 	}
-	job, err := s.store.EnqueueAutoFulfillment(ctx, parentOrderSN)
+	job, err := s.store.EnqueueAutoFulfillment(ctx, parentOrderSN, fulfillmentMode)
 	if err != nil {
 		return AutoFulfillmentAcceptance{}, err
 	}
@@ -2201,7 +2209,24 @@ type BulkFulfillmentStart struct {
 }
 
 func (s *Service) StartBulkFulfillment(ctx context.Context) (BulkFulfillmentStart, error) {
-	batch, created, err := s.store.CreateBulkFulfillmentBatch(ctx, newID("bulk"))
+	return s.startBulkFulfillment(ctx, model.FulfillmentModeDirect, nil)
+}
+
+func (s *Service) StartSubstitutionBulkFulfillment(ctx context.Context) (BulkFulfillmentStart, error) {
+	_, bySKU, err := s.activeSubstitutionCatalog(ctx)
+	if err != nil {
+		return BulkFulfillmentStart{}, err
+	}
+	targets := make([]string, 0, len(bySKU))
+	for sku := range bySKU {
+		targets = append(targets, sku)
+	}
+	sort.Strings(targets)
+	return s.startBulkFulfillment(ctx, model.FulfillmentModeSubstitution, targets)
+}
+
+func (s *Service) startBulkFulfillment(ctx context.Context, fulfillmentMode string, substitutionSKUs []string) (BulkFulfillmentStart, error) {
+	batch, created, err := s.store.CreateBulkFulfillmentBatch(ctx, newID("bulk"), fulfillmentMode, substitutionSKUs)
 	if err != nil {
 		return BulkFulfillmentStart{}, err
 	}
@@ -2209,11 +2234,19 @@ func (s *Service) StartBulkFulfillment(ctx context.Context) (BulkFulfillmentStar
 }
 
 func (s *Service) LatestBulkFulfillment(ctx context.Context) (model.BulkFulfillmentBatch, error) {
-	return s.store.LatestBulkFulfillmentBatch(ctx)
+	return s.store.LatestBulkFulfillmentBatch(ctx, model.FulfillmentModeDirect)
 }
 
 func (s *Service) RestartBulkFulfillment(ctx context.Context) (model.BulkFulfillmentBatch, error) {
-	return s.store.RestartBulkFulfillmentBatch(ctx)
+	return s.store.RestartBulkFulfillmentBatch(ctx, model.FulfillmentModeDirect)
+}
+
+func (s *Service) LatestSubstitutionBulkFulfillment(ctx context.Context) (model.BulkFulfillmentBatch, error) {
+	return s.store.LatestBulkFulfillmentBatch(ctx, model.FulfillmentModeSubstitution)
+}
+
+func (s *Service) RestartSubstitutionBulkFulfillment(ctx context.Context) (model.BulkFulfillmentBatch, error) {
+	return s.store.RestartBulkFulfillmentBatch(ctx, model.FulfillmentModeSubstitution)
 }
 
 func (s *Service) ProcessBulkFulfillment(ctx context.Context, concurrency int) (bool, error) {
@@ -2254,7 +2287,7 @@ func (s *Service) ProcessBulkFulfillment(ctx context.Context, concurrency int) (
 			continue
 		case "failed":
 			order, orderErr := s.store.GetOrder(ctx, item.ParentOrderSN)
-			if orderErr == nil && manualOrderReason(order) != "" {
+			if batch.FulfillmentMode == model.FulfillmentModeDirect && orderErr == nil && manualOrderReason(order) != "" {
 				if _, finishErr := s.store.FinishBulkFulfillmentItem(ctx, batch.ID, item.ParentOrderSN, "succeeded", "订单已转入人工处理，自动批次已跳过"); finishErr != nil {
 					return true, finishErr
 				}
@@ -2289,14 +2322,14 @@ func (s *Service) ProcessBulkFulfillment(ctx context.Context, concurrency int) (
 		if orderErr != nil {
 			return true, stop(item, orderErr)
 		}
-		if manualOrderReason(order) != "" {
+		if batch.FulfillmentMode == model.FulfillmentModeDirect && manualOrderReason(order) != "" {
 			if _, finishErr := s.store.FinishBulkFulfillmentItem(ctx, batch.ID, item.ParentOrderSN, "succeeded", "订单已转入人工处理，自动批次已跳过"); finishErr != nil {
 				return true, finishErr
 			}
 			processed = true
 			continue
 		}
-		if _, enqueueErr := s.EnqueueAutoFulfillment(ctx, item.ParentOrderSN); errors.Is(enqueueErr, errOrderNoLongerAwaitingShipment) {
+		if _, enqueueErr := s.enqueueAutoFulfillment(ctx, item.ParentOrderSN, batch.FulfillmentMode); errors.Is(enqueueErr, errOrderNoLongerAwaitingShipment) {
 			if _, finishErr := s.store.FinishBulkFulfillmentItem(ctx, batch.ID, item.ParentOrderSN, "succeeded", "平台订单已不再待发货，批次已跳过"); finishErr != nil {
 				return true, finishErr
 			}
@@ -2415,16 +2448,36 @@ func (s *Service) recoverUnknownShipment(ctx context.Context, shipment model.Shi
 func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillmentJob) error {
 	shipment, err := s.store.ShipmentForOrder(ctx, job.ParentOrderSN)
 	if errors.Is(err, pgx.ErrNoRows) {
-		quote, quoteErr := s.Quote(ctx, QuoteRequest{ParentOrderSN: job.ParentOrderSN, Region: "auto"})
-		if quoteErr != nil {
-			if errors.Is(quoteErr, errOrderNoLongerAwaitingShipment) {
+		var purchased PurchaseResult
+		var purchaseErr error
+		if job.FulfillmentMode == model.FulfillmentModeSubstitution {
+			comparison, compareErr := s.CompareSubstitutionPrices(ctx, job.ParentOrderSN)
+			if compareErr != nil {
+				purchaseErr = compareErr
+			} else if !comparison.Replacement.Available || comparison.Replacement.BestQuote == nil {
+				purchaseErr = errors.New("替代组合当前没有可用仓库和物流渠道")
+			} else {
+				purchased, purchaseErr = s.PurchaseSubstitution(ctx, SubstitutionPurchaseRequest{
+					ParentOrderSN: job.ParentOrderSN,
+					WarehouseKey:  comparison.Replacement.BestQuote.WarehouseKey,
+				})
+			}
+		} else {
+			quote, quoteErr := s.Quote(ctx, QuoteRequest{ParentOrderSN: job.ParentOrderSN, Region: "auto"})
+			if quoteErr != nil {
+				purchaseErr = quoteErr
+			} else {
+				purchased, purchaseErr = s.Purchase(ctx, quote.Quote.ID)
+			}
+		}
+		if purchaseErr != nil && purchased.Shipment.ID == "" {
+			if errors.Is(purchaseErr, errOrderNoLongerAwaitingShipment) {
 				return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, "", "skipped", "平台订单已不再待发货")
 			}
-			status := fulfillmentErrorStatus(quoteErr, "queued")
-			_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, "", status, quoteErr.Error())
-			return quoteErr
+			status := fulfillmentErrorStatus(purchaseErr, "queued")
+			_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, "", status, purchaseErr.Error())
+			return purchaseErr
 		}
-		purchased, purchaseErr := s.Purchase(ctx, quote.Quote.ID)
 		shipment = purchased.Shipment
 		if shipment.ID == "" {
 			message := "Temu shipment was not created"
@@ -2517,7 +2570,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, autoFulfillmentOMSFailureStatus(checkErr), checkErr.Error())
 				return checkErr
 			}
-			if shipment.OMSSync != nil && shipment.OMSSync.Status == "verified" {
+			if shipment.OMSSync != nil && (shipment.OMSSync.Status == "verified" || shipment.OMSSync.Status == "terminal") {
 				return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "completed", "")
 			}
 			return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "waiting_oms", "")
@@ -2759,6 +2812,31 @@ func shipmentConfirmationStalled(shipment model.Shipment, now time.Time) bool {
 }
 func (s *Service) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
 	return s.store.ListOMSPlatformOrderStatuses(ctx, status, page, pageSize)
+}
+
+func (s *Service) ResolveMissingOMSPlatformOrder(ctx context.Context, parentOrderSN, terminalStatus, terminalNote string) (model.OMSPlatformOrderStatus, error) {
+	parentOrderSN = strings.TrimSpace(parentOrderSN)
+	terminalStatus = strings.ToLower(strings.TrimSpace(terminalStatus))
+	terminalNote = strings.TrimSpace(terminalNote)
+	if parentOrderSN == "" {
+		return model.OMSPlatformOrderStatus{}, errors.New("parent order number is required")
+	}
+	allowed := map[string]bool{
+		"manually_fulfilled": true,
+		"cancelled":          true,
+		"not_required":       true,
+		"other":              true,
+	}
+	if !allowed[terminalStatus] {
+		return model.OMSPlatformOrderStatus{}, errors.New("请选择有效的人工终态")
+	}
+	if terminalNote == "" {
+		return model.OMSPlatformOrderStatus{}, errors.New("人工终态备注不能为空")
+	}
+	if len([]rune(terminalNote)) > 500 {
+		return model.OMSPlatformOrderStatus{}, errors.New("人工终态备注不能超过 500 个字符")
+	}
+	return s.store.ResolveMissingOMSPlatformOrder(ctx, parentOrderSN, terminalStatus, terminalNote)
 }
 func (s *Service) ShipmentStatusCounts(ctx context.Context, queue string) (map[string]int, error) {
 	return s.store.ShipmentStatusCounts(ctx, queue)

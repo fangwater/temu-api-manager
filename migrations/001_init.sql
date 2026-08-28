@@ -343,6 +343,11 @@ CREATE TABLE IF NOT EXISTS temu_oms_sync_checks (
 );
 
 ALTER TABLE temu_oms_sync_checks
+    ADD COLUMN IF NOT EXISTS terminal_status text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS terminal_note text NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS terminal_at timestamptz;
+
+ALTER TABLE temu_oms_sync_checks
     DROP CONSTRAINT IF EXISTS temu_oms_dispatches_status_check,
     DROP CONSTRAINT IF EXISTS temu_oms_sync_checks_status_check;
 
@@ -352,7 +357,13 @@ WHERE status IN ('pushing', 'verification_pending');
 ALTER TABLE temu_oms_sync_checks
     DROP COLUMN IF EXISTS strategy,
     ADD CONSTRAINT temu_oms_sync_checks_status_check
-        CHECK (status IN ('querying', 'waiting_sync', 'verified', 'failed', 'manual_required'));
+        CHECK (status IN ('querying', 'waiting_sync', 'verified', 'failed', 'manual_required', 'terminal'));
+
+ALTER TABLE temu_oms_sync_checks
+    DROP CONSTRAINT IF EXISTS temu_oms_sync_checks_terminal_status_check,
+    ADD CONSTRAINT temu_oms_sync_checks_terminal_status_check CHECK (
+        terminal_status IN ('', 'manually_fulfilled', 'cancelled', 'not_required', 'other')
+    );
 
 DROP INDEX IF EXISTS temu_oms_dispatches_status_idx;
 CREATE INDEX IF NOT EXISTS temu_oms_sync_checks_status_idx
@@ -362,6 +373,7 @@ CREATE INDEX IF NOT EXISTS temu_shipment_events_shipment_idx
 
 CREATE TABLE IF NOT EXISTS temu_auto_fulfillment_jobs (
     parent_order_sn text PRIMARY KEY REFERENCES temu_orders(parent_order_sn) ON DELETE CASCADE,
+    fulfillment_mode text NOT NULL DEFAULT 'direct',
     shipment_id text REFERENCES temu_shipments(id) ON DELETE SET NULL,
     status text NOT NULL CHECK (status IN (
         'queued', 'running', 'waiting_label', 'confirming',
@@ -374,6 +386,12 @@ CREATE TABLE IF NOT EXISTS temu_auto_fulfillment_jobs (
     started_at timestamptz,
     completed_at timestamptz
 );
+
+ALTER TABLE temu_auto_fulfillment_jobs
+    ADD COLUMN IF NOT EXISTS fulfillment_mode text NOT NULL DEFAULT 'direct',
+    DROP CONSTRAINT IF EXISTS temu_auto_fulfillment_jobs_fulfillment_mode_check,
+    ADD CONSTRAINT temu_auto_fulfillment_jobs_fulfillment_mode_check
+        CHECK (fulfillment_mode IN ('direct', 'substitution'));
 
 ALTER TABLE temu_auto_fulfillment_jobs
     DROP CONSTRAINT IF EXISTS temu_auto_fulfillment_jobs_status_check;
@@ -404,6 +422,7 @@ ON CONFLICT(parent_order_sn) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS temu_bulk_fulfillment_batches (
     id text PRIMARY KEY,
+    fulfillment_mode text NOT NULL DEFAULT 'direct',
     status text NOT NULL CHECK (status IN ('running', 'stopped', 'completed')),
     total_orders integer NOT NULL DEFAULT 0,
     succeeded_orders integer NOT NULL DEFAULT 0,
@@ -415,8 +434,15 @@ CREATE TABLE IF NOT EXISTS temu_bulk_fulfillment_batches (
     completed_at timestamptz
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS temu_bulk_fulfillment_batches_one_running_idx
-    ON temu_bulk_fulfillment_batches(status) WHERE status='running';
+ALTER TABLE temu_bulk_fulfillment_batches
+    ADD COLUMN IF NOT EXISTS fulfillment_mode text NOT NULL DEFAULT 'direct',
+    DROP CONSTRAINT IF EXISTS temu_bulk_fulfillment_batches_fulfillment_mode_check,
+    ADD CONSTRAINT temu_bulk_fulfillment_batches_fulfillment_mode_check
+        CHECK (fulfillment_mode IN ('direct', 'substitution'));
+
+DROP INDEX IF EXISTS temu_bulk_fulfillment_batches_one_running_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS temu_bulk_fulfillment_batches_one_running_mode_idx
+    ON temu_bulk_fulfillment_batches(fulfillment_mode) WHERE status='running';
 
 CREATE TABLE IF NOT EXISTS temu_bulk_fulfillment_items (
     batch_id text NOT NULL REFERENCES temu_bulk_fulfillment_batches(id) ON DELETE CASCADE,

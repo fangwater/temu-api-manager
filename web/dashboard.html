@@ -78,7 +78,7 @@
           </section>
 
           <section class="view" id="view-substitutions">
-            <div class="page-head"><div><h1>可替换发货</h1><p>原 SKU 与替代组合的实时库存及 Temu 面单成本</p></div><button class="secondary-button" id="refresh-substitutions"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+            <div class="page-head"><div><h1>可替换发货</h1><p>原 SKU 与替代组合的实时库存及 Temu 面单成本</p></div><div class="page-actions bulk-actions"><span class="bulk-progress" id="substitution-bulk-progress" hidden></span><button class="secondary-button" id="restart-substitution-bulk" hidden><svg><use href="#i-refresh"/></svg>重启批次</button><button class="primary-button" id="substitution-bulk-fulfill"><svg><use href="#i-truck"/></svg><span id="substitution-bulk-fulfill-text">一键替换发货</span></button><button class="secondary-button" id="refresh-substitutions"><svg><use href="#i-refresh"/></svg>刷新</button></div></div>
             <div class="status-band">
               <div><small>候选订单</small><strong id="metric-substitution-orders">0</strong></div>
               <div><small>启用映射</small><strong id="metric-substitution-mappings">0</strong></div>
@@ -238,6 +238,7 @@
               <button type="button" role="tab" aria-selected="false" data-oms-status="2"><span>状态 2</span><strong>处理中</strong><b id="metric-oms-status-2">0</b></button>
               <button type="button" role="tab" aria-selected="false" data-oms-status="3"><span>状态 3</span><strong>已发货</strong><b id="metric-oms-status-3">0</b></button>
               <button type="button" role="tab" aria-selected="false" data-oms-status="missing"><span>Temu 已发货</span><strong>领星无匹配订单</strong><b id="metric-oms-status-missing">0</b></button>
+              <button type="button" role="tab" aria-selected="false" data-oms-status="terminal"><span>人工结案</span><strong>人工终态</strong><b id="metric-oms-status-terminal">0</b></button>
             </div>
             <div class="toolbar">
               <div class="oms-status-heading"><strong id="oms-status-heading">状态 0 · 待处理</strong><small id="oms-status-caption">后台正在自动分配仓库与物流</small></div>
@@ -418,7 +419,17 @@
         <div class="dialog-actions"><button type="button" class="secondary-button" id="manual-resolution-cancel">取消</button><button type="submit" class="primary-button"><svg><use href="#i-check"/></svg>确认完成</button></div>
       </form>
     </dialog>
+    <dialog class="key-dialog manual-resolution-dialog" id="oms-terminal-dialog">
+      <form id="oms-terminal-form">
+        <div class="key-icon"><svg><use href="#i-check"/></svg></div>
+        <h2>设置领星人工终态</h2>
+        <p id="oms-terminal-order">请选择无匹配订单的人工处理结果</p>
+        <label><span>终态结果</span><select id="oms-terminal-status" required><option value="">请选择</option><option value="manually_fulfilled">已人工发货</option><option value="cancelled">订单已取消</option><option value="not_required">无需处理</option><option value="other">其他已结案</option></select></label>
+        <label><span>结案备注</span><textarea id="oms-terminal-note" maxlength="500" rows="4" required placeholder="记录核实结果和人工处理方式"></textarea></label>
+        <div class="dialog-actions"><button type="button" class="secondary-button" id="oms-terminal-cancel">取消</button><button type="submit" class="primary-button"><svg><use href="#i-check"/></svg>确认结案</button></div>
+      </form>
+    </dialog>
     <div class="toast" id="toast" hidden></div>
-    <script src="./dashboard.js?v=20260827-3" defer></script>
+    <script src="./dashboard.js?v=20260828-1" defer></script>
   </body>
 </html>

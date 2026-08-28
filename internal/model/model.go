@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	FulfillmentModeDirect       = "direct"
+	FulfillmentModeSubstitution = "substitution"
+)
+
 type Order struct {
 	ParentOrderSN        string              `json:"parent_order_sn"`
 	Status               int                 `json:"status"`
@@ -30,6 +35,7 @@ type Order struct {
 
 type BulkFulfillmentBatch struct {
 	ID              string     `json:"id"`
+	FulfillmentMode string     `json:"fulfillment_mode"`
 	Status          string     `json:"status"`
 	TotalOrders     int        `json:"total_orders"`
 	SucceededOrders int        `json:"succeeded_orders"`
@@ -51,15 +57,16 @@ type BulkFulfillmentItem struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 type AutoFulfillmentJob struct {
-	ParentOrderSN string     `json:"parent_order_sn"`
-	ShipmentID    string     `json:"shipment_id,omitempty"`
-	Status        string     `json:"status"`
-	Attempts      int        `json:"attempts"`
-	LastError     string     `json:"last_error,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	ParentOrderSN   string     `json:"parent_order_sn"`
+	FulfillmentMode string     `json:"fulfillment_mode"`
+	ShipmentID      string     `json:"shipment_id,omitempty"`
+	Status          string     `json:"status"`
+	Attempts        int        `json:"attempts"`
+	LastError       string     `json:"last_error,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 type OrderDetail struct {
@@ -200,6 +207,9 @@ type OMSSync struct {
 	CreatedAt        time.Time       `json:"created_at"`
 	UpdatedAt        time.Time       `json:"updated_at"`
 	VerifiedAt       *time.Time      `json:"verified_at,omitempty"`
+	TerminalStatus   string          `json:"terminal_status,omitempty"`
+	TerminalNote     string          `json:"terminal_note,omitempty"`
+	TerminalAt       *time.Time      `json:"terminal_at,omitempty"`
 }
 
 type OMSPlatformOrderStatus struct {
@@ -220,6 +230,9 @@ type OMSPlatformOrderStatus struct {
 	Archived             bool       `json:"archived"`
 	QueriedAt            time.Time  `json:"queried_at"`
 	VerifiedAt           *time.Time `json:"verified_at,omitempty"`
+	TerminalStatus       string     `json:"terminal_status,omitempty"`
+	TerminalNote         string     `json:"terminal_note,omitempty"`
+	TerminalAt           *time.Time `json:"terminal_at,omitempty"`
 }
 
 type PackageSpec struct {

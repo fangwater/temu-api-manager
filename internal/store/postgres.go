@@ -242,7 +242,7 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
 		       coalesce(o.expect_ship_latest_time,0),coalesce(o.update_time,0),o.order_labels,
 		       o.fulfillment_warnings,o.is_open,o.first_seen_at,o.last_seen_at,o.last_synced_at,
 		       s.id,s.status,s.shipping_company_name,s.tracking_number,s.created_at,
-		       j.parent_order_sn,j.shipment_id,j.status,j.attempts,j.last_error,
+		       j.parent_order_sn,j.fulfillment_mode,j.shipment_id,j.status,j.attempts,j.last_error,
 		       j.created_at,j.updated_at,j.started_at,j.completed_at
 		FROM temu_orders o
 		LEFT JOIN temu_shipment_orders so ON so.parent_order_sn=o.parent_order_sn
@@ -260,13 +260,13 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
 		var item model.Order
 		var shipmentID, shipmentStatus, company, tracking *string
 		var shipmentCreated *time.Time
-		var jobParent, jobShipment, jobStatus, jobError *string
+		var jobParent, jobMode, jobShipment, jobStatus, jobError *string
 		var jobAttempts *int
 		var jobCreated, jobUpdated, jobStarted, jobCompleted *time.Time
 		if err := rows.Scan(&item.ParentOrderSN, &item.Status, &item.FulfillmentType, &item.RegionID,
 			&item.ExpectShipLatestTime, &item.UpdateTime, &item.Labels, &item.Warnings, &item.Open,
 			&item.FirstSeenAt, &item.LastSeenAt, &item.LastSyncedAt, &shipmentID, &shipmentStatus,
-			&company, &tracking, &shipmentCreated, &jobParent, &jobShipment, &jobStatus,
+			&company, &tracking, &shipmentCreated, &jobParent, &jobMode, &jobShipment, &jobStatus,
 			&jobAttempts, &jobError, &jobCreated, &jobUpdated, &jobStarted, &jobCompleted); err != nil {
 			return nil, 0, err
 		}
@@ -274,7 +274,7 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
 			item.Shipment = &model.ShipmentBrief{ID: *shipmentID, Status: value(shipmentStatus), ShippingCompanyName: value(company), TrackingNumber: value(tracking), CreatedAt: *shipmentCreated}
 		}
 		if jobParent != nil {
-			item.AutoFulfillment = &model.AutoFulfillmentJob{ParentOrderSN: *jobParent, ShipmentID: value(jobShipment), Status: value(jobStatus), Attempts: intValue(jobAttempts), LastError: value(jobError), StartedAt: jobStarted, CompletedAt: jobCompleted}
+			item.AutoFulfillment = &model.AutoFulfillmentJob{ParentOrderSN: *jobParent, FulfillmentMode: value(jobMode), ShipmentID: value(jobShipment), Status: value(jobStatus), Attempts: intValue(jobAttempts), LastError: value(jobError), StartedAt: jobStarted, CompletedAt: jobCompleted}
 			if jobCreated != nil {
 				item.AutoFulfillment.CreatedAt = *jobCreated
 			}
@@ -1093,7 +1093,8 @@ s.failed_carrier_codes,s.package_sn_list,s.tracking_number,s.request_payload,
 	d.shipment_id,d.oms_warehouse_key,d.warehouse_code,d.status,
 	coalesce(d.outbound_order_nos,'{}'::text[]),coalesce(d.tracking_number,''),
 	coalesce(d.attempts,0),coalesce(d.error_message,''),
-	coalesce(d.response_summary,'{}'::jsonb),d.created_at,d.updated_at,d.verified_at
+	coalesce(d.response_summary,'{}'::jsonb),d.created_at,d.updated_at,d.verified_at,
+	coalesce(d.terminal_status,''),coalesce(d.terminal_note,''),d.terminal_at
 	FROM temu_shipments s
 	JOIN temu_shipping_quotes q ON q.id=s.quote_id
 LEFT JOIN public.temu_warehouse_mappings m ON m.oms_warehouse_key=q.oms_warehouse_key
@@ -1107,7 +1108,8 @@ func scanShipment(row pgx.Row) (model.Shipment, error) {
 	var syncAttempts int
 	var syncError string
 	var syncSummary json.RawMessage
-	var syncCreated, syncUpdated, syncVerified *time.Time
+	var syncCreated, syncUpdated, syncVerified, syncTerminalAt *time.Time
+	var syncTerminalStatus, syncTerminalNote string
 	err := row.Scan(
 		&s.ID, &s.QuoteID, &s.IdempotencyKey, &s.Status, &s.SelectionMode,
 		&s.WarehouseID, &s.ChannelID, &s.ShipCompanyID, &s.ShippingCompanyName,
@@ -1116,7 +1118,7 @@ func scanShipment(row pgx.Row) (model.Shipment, error) {
 		&s.ConfirmedAt, &s.ParentOrderSN, &s.OMSWarehouseKey, &s.OMSWarehouseCode,
 		&syncID, &syncKey, &syncCode, &syncStatus, &syncOrders, &syncTracking,
 		&syncAttempts, &syncError, &syncSummary, &syncCreated,
-		&syncUpdated, &syncVerified,
+		&syncUpdated, &syncVerified, &syncTerminalStatus, &syncTerminalNote, &syncTerminalAt,
 	)
 	if err == nil && syncID != nil {
 		s.OMSSync = &model.OMSSync{
@@ -1125,7 +1127,8 @@ func scanShipment(row pgx.Row) (model.Shipment, error) {
 			Status:        value(syncStatus), OutboundOrderNos: syncOrders,
 			TrackingNumber: syncTracking, Attempts: syncAttempts,
 			ErrorMessage: syncError, Summary: syncSummary,
-			VerifiedAt: syncVerified,
+			VerifiedAt: syncVerified, TerminalStatus: syncTerminalStatus,
+			TerminalNote: syncTerminalNote, TerminalAt: syncTerminalAt,
 		}
 		if syncCreated != nil {
 			s.OMSSync.CreatedAt = *syncCreated
@@ -1238,6 +1241,7 @@ const omsAutomaticFulfillmentSQL = `coalesce(
 
 const (
 	omsPlatformOrderMissingStatus  = -1
+	omsPlatformOrderTerminalStatus = -2
 	omsPlatformOrderMissingRecords = `
 	FROM temu_oms_sync_checks d
 	JOIN temu_shipments s ON s.id=d.shipment_id
@@ -1256,10 +1260,23 @@ const (
 	  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0
 	  AND jsonb_typeof(d.response_summary->'opposite'->'orders')='array'
 	  AND jsonb_array_length(d.response_summary->'opposite'->'orders')=0`
+	omsPlatformOrderTerminalRecords = `
+	FROM temu_oms_sync_checks d
+	JOIN temu_shipments s ON s.id=d.shipment_id
+	JOIN temu_shipment_orders so ON so.shipment_id=s.id
+	LEFT JOIN temu_auto_fulfillment_jobs j ON j.parent_order_sn=so.parent_order_sn
+	LEFT JOIN LATERAL (
+		SELECT min(e.created_at) AS label_ready_at
+		FROM temu_shipment_events e
+		WHERE e.shipment_id=s.id AND e.event_type='label_ready'
+	) label_event ON true
+	WHERE d.status='terminal' AND d.terminal_status<>''`
 )
 
 func omsPlatformOrderStatusText(status int) string {
 	switch status {
+	case omsPlatformOrderTerminalStatus:
+		return "人工终态"
 	case omsPlatformOrderMissingStatus:
 		return "领星无匹配订单"
 	case 0:
@@ -1276,8 +1293,8 @@ func omsPlatformOrderStatusText(status int) string {
 }
 
 func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, page, pageSize int) ([]model.OMSPlatformOrderStatus, int, map[int]int, error) {
-	if status != omsPlatformOrderMissingStatus && (status < 0 || status > 3) {
-		return nil, 0, nil, errors.New("OMS platform order status must be missing or between 0 and 3")
+	if status != omsPlatformOrderMissingStatus && status != omsPlatformOrderTerminalStatus && (status < 0 || status > 3) {
+		return nil, 0, nil, errors.New("OMS platform order status must be terminal, missing, or between 0 and 3")
 	}
 	if page < 1 {
 		page = 1
@@ -1286,7 +1303,7 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 		pageSize = 30
 	}
 
-	counts := map[int]int{omsPlatformOrderMissingStatus: 0, 0: 0, 1: 0, 2: 0, 3: 0}
+	counts := map[int]int{omsPlatformOrderTerminalStatus: 0, omsPlatformOrderMissingStatus: 0, 0: 0, 1: 0, 2: 0, 3: 0}
 	rows, err := p.pool.Query(ctx, `
 		SELECT (oms_order->>'status')::integer,count(*)`+omsPlatformOrderStatusRecords+`
 		GROUP BY (oms_order->>'status')::integer
@@ -1312,9 +1329,27 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 		return nil, 0, nil, err
 	}
 	counts[omsPlatformOrderMissingStatus] = missingCount
+	var terminalCount int
+	if err := p.pool.QueryRow(ctx, `SELECT count(*)`+omsPlatformOrderTerminalRecords).Scan(&terminalCount); err != nil {
+		return nil, 0, nil, err
+	}
+	counts[omsPlatformOrderTerminalStatus] = terminalCount
 
 	total := counts[status]
-	if status == omsPlatformOrderMissingStatus {
+	if status == omsPlatformOrderTerminalStatus {
+		rows, err = p.pool.Query(ctx, `
+		SELECT so.parent_order_sn,'',
+			coalesce(d.response_summary#>>'{expected,account}',d.response_summary#>>'{expected,configured_account}',''),
+			-2,'terminal',d.warehouse_code,'',
+			coalesce(nullif(d.tracking_number,''),s.tracking_number),'',
+			d.status,coalesce(j.status,''),
+			`+omsAutomaticFulfillmentSQL+`,
+			label_event.label_ready_at,true,d.updated_at,d.verified_at,
+			d.terminal_status,d.terminal_note,d.terminal_at`+
+			omsPlatformOrderTerminalRecords+`
+		ORDER BY d.terminal_at DESC,so.parent_order_sn
+		LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
+	} else if status == omsPlatformOrderMissingStatus {
 		rows, err = p.pool.Query(ctx, `
 		SELECT so.parent_order_sn,'',
 			coalesce(d.response_summary#>>'{expected,account}',d.response_summary#>>'{expected,configured_account}',''),
@@ -1322,7 +1357,8 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 			coalesce(nullif(d.tracking_number,''),s.tracking_number),'',
 			d.status,coalesce(j.status,''),
 			`+omsAutomaticFulfillmentSQL+`,
-			label_event.label_ready_at,false,d.updated_at,d.verified_at`+
+			label_event.label_ready_at,false,d.updated_at,d.verified_at,
+			d.terminal_status,d.terminal_note,d.terminal_at`+
 			omsPlatformOrderMissingRecords+`
 		ORDER BY d.updated_at DESC,so.parent_order_sn
 		LIMIT $1 OFFSET $2`, pageSize, (page-1)*pageSize)
@@ -1337,7 +1373,8 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 			coalesce(oms_order->>'audit_time',''),d.status,coalesce(j.status,''),
 			`+omsAutomaticFulfillmentSQL+`,
 			label_event.label_ready_at,
-			coalesce(d.status='verified' AND j.status='completed',false),d.updated_at,d.verified_at`+
+			coalesce(d.status='verified' AND j.status='completed',false),d.updated_at,d.verified_at,
+			d.terminal_status,d.terminal_note,d.terminal_at`+
 			omsPlatformOrderStatusRecords+`
 		AND (oms_order->>'status')::integer=$1
 		ORDER BY d.updated_at DESC,so.parent_order_sn,coalesce(oms_order->>'oms_order_no','')
@@ -1357,6 +1394,7 @@ func (p *Postgres) ListOMSPlatformOrderStatuses(ctx context.Context, status, pag
 			&item.SyncStatus, &item.JobStatus, &item.AutomaticFulfillment,
 			&item.LabelReadyAt, &item.Archived,
 			&item.QueriedAt, &item.VerifiedAt,
+			&item.TerminalStatus, &item.TerminalNote, &item.TerminalAt,
 		); err != nil {
 			return nil, 0, nil, err
 		}
@@ -1501,12 +1539,12 @@ func (p *Postgres) StartOMSSync(ctx context.Context, shipmentID string, mapping 
 			tracking_number=EXCLUDED.tracking_number,
 			attempts=temu_oms_sync_checks.attempts+1,
 			error_message='',updated_at=now()
-		WHERE temu_oms_sync_checks.status NOT IN ('verified','manual_required')
+		WHERE temu_oms_sync_checks.status NOT IN ('verified','manual_required','terminal')
 		  AND (temu_oms_sync_checks.status <> 'querying'
 		       OR temu_oms_sync_checks.updated_at < now()-interval '2 minutes')
 		RETURNING shipment_id,oms_warehouse_key,warehouse_code,status,
 			outbound_order_nos,tracking_number,attempts,error_message,response_summary,
-			created_at,updated_at,verified_at
+			created_at,updated_at,verified_at,terminal_status,terminal_note,terminal_at
 	`, shipmentID, mapping.OMSKey, mapping.OMSWarehouseCode, tracking)
 	item, err := scanOMSSync(row)
 	if err == nil {
@@ -1528,7 +1566,7 @@ func (p *Postgres) GetOMSSync(ctx context.Context, shipmentID string) (model.OMS
 	return scanOMSSync(p.pool.QueryRow(ctx, `
 		SELECT shipment_id,oms_warehouse_key,warehouse_code,status,
 			outbound_order_nos,tracking_number,attempts,error_message,response_summary,
-			created_at,updated_at,verified_at
+			created_at,updated_at,verified_at,terminal_status,terminal_note,terminal_at
 		FROM temu_oms_sync_checks WHERE shipment_id=$1
 	`, shipmentID))
 }
@@ -1540,6 +1578,7 @@ func scanOMSSync(row pgx.Row) (model.OMSSync, error) {
 		&item.Status, &item.OutboundOrderNos, &item.TrackingNumber,
 		&item.Attempts, &item.ErrorMessage, &item.Summary,
 		&item.CreatedAt, &item.UpdatedAt, &item.VerifiedAt,
+		&item.TerminalStatus, &item.TerminalNote, &item.TerminalAt,
 	)
 	return item, err
 }
@@ -1559,7 +1598,7 @@ func (p *Postgres) UpdateOMSSync(
 			status=$2,outbound_order_nos=$3,tracking_number=$4,
 			response_summary=$5,error_message=$6,updated_at=now(),
 			verified_at=CASE WHEN $2='verified' THEN now() ELSE verified_at END
-		WHERE shipment_id=$1
+		WHERE shipment_id=$1 AND status<>'terminal'
 	`, shipmentID, status, outboundOrderNos, tracking, summary, message)
 	if err != nil {
 		return err
@@ -1578,6 +1617,64 @@ func (p *Postgres) UpdateOMSSync(
 	return err
 }
 
+func (p *Postgres) ResolveMissingOMSPlatformOrder(ctx context.Context, parentOrderSN, terminalStatus, terminalNote string) (model.OMSPlatformOrderStatus, error) {
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return model.OMSPlatformOrderStatus{}, err
+	}
+	defer tx.Rollback(ctx)
+	var shipmentID string
+	err = tx.QueryRow(ctx, `
+		UPDATE temu_oms_sync_checks d SET
+			status='terminal',terminal_status=$2,terminal_note=$3,terminal_at=now(),
+			error_message='',updated_at=now()
+		FROM temu_shipments s
+		JOIN temu_shipment_orders so ON so.shipment_id=s.id
+		WHERE d.shipment_id=s.id AND so.parent_order_sn=$1
+		  AND s.status='shipped' AND s.confirmed_at IS NOT NULL
+		  AND d.status IN ('waiting_sync','manual_required')
+		  AND d.response_summary->>'source'='oms_platform_order'
+		  AND jsonb_typeof(d.response_summary->'expected'->'orders')='array'
+		  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0
+		  AND jsonb_typeof(d.response_summary->'opposite'->'orders')='array'
+		  AND jsonb_array_length(d.response_summary->'opposite'->'orders')=0
+		RETURNING d.shipment_id
+	`, parentOrderSN, terminalStatus, terminalNote).Scan(&shipmentID)
+	if err != nil {
+		return model.OMSPlatformOrderStatus{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE temu_auto_fulfillment_jobs SET
+			status='completed',last_error='',updated_at=now(),completed_at=now()
+		WHERE parent_order_sn=$1
+	`, parentOrderSN); err != nil {
+		return model.OMSPlatformOrderStatus{}, err
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"parent_order_sn": parentOrderSN,
+		"terminal_status": terminalStatus,
+		"terminal_note":   terminalNote,
+	})
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO temu_shipment_events(shipment_id,event_type,payload)
+		VALUES($1,'oms_sync_terminal',$2)
+	`, shipmentID, payload); err != nil {
+		return model.OMSPlatformOrderStatus{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.OMSPlatformOrderStatus{}, err
+	}
+	return model.OMSPlatformOrderStatus{
+		PlatformOrderSN: parentOrderSN,
+		Status:          omsPlatformOrderTerminalStatus,
+		StatusKey:       "terminal",
+		StatusText:      omsPlatformOrderStatusText(omsPlatformOrderTerminalStatus),
+		SyncStatus:      "terminal",
+		TerminalStatus:  terminalStatus,
+		TerminalNote:    terminalNote,
+	}, nil
+}
+
 func (p *Postgres) PendingOMSSyncShipmentIDs(ctx context.Context, retryBefore time.Time, limit int) ([]string, error) {
 	if limit < 1 || limit > 100 {
 		limit = 20
@@ -1592,7 +1689,7 @@ JOIN public.temu_warehouse_mappings m ON m.oms_warehouse_key=q.oms_warehouse_key
 		  AND s.tracking_number <> ''
 		  AND cardinality(s.package_sn_list) > 0
 		  AND m.oms_warehouse_code <> ''
-		  AND (d.shipment_id IS NULL OR (d.status NOT IN ('verified','manual_required') AND d.updated_at < $1))
+		  AND (d.shipment_id IS NULL OR (d.status NOT IN ('verified','manual_required','terminal') AND d.updated_at < $1))
 		ORDER BY s.confirmed_at, s.created_at
 		LIMIT $2
 	`, retryBefore, limit)
@@ -1664,16 +1761,16 @@ func (p *Postgres) RepairShipmentCompletionJobs(ctx context.Context, staleBefore
 	return repaired, err
 }
 
-func (p *Postgres) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN string) (model.AutoFulfillmentJob, error) {
+func (p *Postgres) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN, fulfillmentMode string) (model.AutoFulfillmentJob, error) {
 	row := p.pool.QueryRow(ctx, `
-		INSERT INTO temu_auto_fulfillment_jobs(parent_order_sn,status)
-		VALUES($1,'queued')
+		INSERT INTO temu_auto_fulfillment_jobs(parent_order_sn,fulfillment_mode,status)
+		VALUES($1,$2,'queued')
 		ON CONFLICT(parent_order_sn) DO UPDATE SET
-			status='queued',last_error='',updated_at=now(),completed_at=NULL
+			fulfillment_mode=EXCLUDED.fulfillment_mode,status='queued',last_error='',updated_at=now(),completed_at=NULL
 		WHERE temu_auto_fulfillment_jobs.status='failed'
-		RETURNING parent_order_sn,coalesce(shipment_id,''),status,attempts,last_error,
+		RETURNING parent_order_sn,fulfillment_mode,coalesce(shipment_id,''),status,attempts,last_error,
 			created_at,updated_at,started_at,completed_at
-	`, parentOrderSN)
+	`, parentOrderSN, fulfillmentMode)
 	job, err := scanAutoFulfillmentJob(row)
 	if err == nil || !errors.Is(err, pgx.ErrNoRows) {
 		return job, err
@@ -1683,7 +1780,7 @@ func (p *Postgres) EnqueueAutoFulfillment(ctx context.Context, parentOrderSN str
 
 func (p *Postgres) GetAutoFulfillment(ctx context.Context, parentOrderSN string) (model.AutoFulfillmentJob, error) {
 	return scanAutoFulfillmentJob(p.pool.QueryRow(ctx, `
-		SELECT parent_order_sn,coalesce(shipment_id,''),status,attempts,last_error,
+		SELECT parent_order_sn,fulfillment_mode,coalesce(shipment_id,''),status,attempts,last_error,
 			created_at,updated_at,started_at,completed_at
 		FROM temu_auto_fulfillment_jobs WHERE parent_order_sn=$1
 	`, parentOrderSN))
@@ -1754,7 +1851,7 @@ WHERE bulk_item.parent_order_sn=j.parent_order_sn
 			status='running',attempts=j.attempts+1,updated_at=now(),
 			started_at=coalesce(j.started_at,now())
 		FROM picked WHERE j.parent_order_sn=picked.parent_order_sn
-		RETURNING j.parent_order_sn,coalesce(j.shipment_id,''),j.status,j.attempts,j.last_error,
+		RETURNING j.parent_order_sn,j.fulfillment_mode,coalesce(j.shipment_id,''),j.status,j.attempts,j.last_error,
 			j.created_at,j.updated_at,j.started_at,j.completed_at
 	`, retryBefore, limit, autoFulfillmentRateLimitMarker, time.Now().Add(-autoFulfillmentRateLimitBackoff))
 	if err != nil {
@@ -1777,12 +1874,16 @@ func (p *Postgres) UpdateAutoFulfillment(ctx context.Context, parentOrderSN, shi
 		UPDATE temu_auto_fulfillment_jobs SET
 			shipment_id=coalesce(nullif($2,''),shipment_id),status=$3,last_error=$4,
 			updated_at=now(),completed_at=CASE WHEN $3='completed' THEN now() ELSE NULL END
-		WHERE parent_order_sn=$1
+		WHERE parent_order_sn=$1 AND (status<>'completed' OR $3='completed')
 	`, parentOrderSN, shipmentID, status, lastError)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() != 1 {
+		var currentStatus string
+		if queryErr := p.pool.QueryRow(ctx, `SELECT status FROM temu_auto_fulfillment_jobs WHERE parent_order_sn=$1`, parentOrderSN).Scan(&currentStatus); queryErr == nil && currentStatus == "completed" {
+			return nil
+		}
 		return pgx.ErrNoRows
 	}
 	return nil
@@ -1790,7 +1891,7 @@ func (p *Postgres) UpdateAutoFulfillment(ctx context.Context, parentOrderSN, shi
 
 func scanAutoFulfillmentJob(row pgx.Row) (model.AutoFulfillmentJob, error) {
 	var item model.AutoFulfillmentJob
-	err := row.Scan(&item.ParentOrderSN, &item.ShipmentID, &item.Status, &item.Attempts,
+	err := row.Scan(&item.ParentOrderSN, &item.FulfillmentMode, &item.ShipmentID, &item.Status, &item.Attempts,
 		&item.LastError, &item.CreatedAt, &item.UpdatedAt, &item.StartedAt, &item.CompletedAt)
 	return item, err
 }

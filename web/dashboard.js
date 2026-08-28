@@ -12,6 +12,7 @@ state.substitutionController = null;
 state.substitutionRequestSequence = 0;
 state.substitutionComparison = null;
 state.substitutionSelectedQuote = null;
+state.substitutionBulkBatch = null;
 state.pages.substitutions = 1;
 state.omsPlatformOrders = [];
 state.omsPlatformOrderMeta = {};
@@ -418,7 +419,7 @@ async function purchaseSubstitutionLabel() {
     });
     toast(data.duplicate ? "该订单已有发货记录，未重复提交" : "组合面单购买请求已提交，后续确认与正常发货一致");
     $("#substitution-dialog").close();
-    await Promise.all([loadOrders(), loadSubstitutionOrders(), loadShipments(), loadBulkFulfillment()]);
+    await Promise.all([loadOrders(), loadSubstitutionOrders(), loadShipments(), loadBulkFulfillment(), loadSubstitutionBulkFulfillment()]);
     switchView("labels");
   } catch (error) {
     toast(error.message, true);
@@ -548,6 +549,95 @@ async function loadBulkFulfillment() {
     renderBulkFulfillment();
   } catch (error) {
     console.error("load bulk fulfillment", error);
+  }
+}
+
+async function loadSubstitutionBulkFulfillment() {
+  try {
+    const { data } = await api("/substitution-fulfillment/batches/latest");
+    state.substitutionBulkBatch = data?.id ? data : null;
+    renderSubstitutionBulkFulfillment();
+  } catch (error) {
+    console.error("load substitution bulk fulfillment", error);
+  }
+}
+
+function renderSubstitutionBulkFulfillment() {
+  const batch = state.substitutionBulkBatch;
+  const button = $("#substitution-bulk-fulfill");
+  const restart = $("#restart-substitution-bulk");
+  const text = $("#substitution-bulk-fulfill-text");
+  const progress = $("#substitution-bulk-progress");
+  progress.className = "bulk-progress";
+  if (!batch) {
+    restart.hidden = true;
+    button.disabled = false;
+    text.textContent = "一键替换发货";
+    progress.hidden = true;
+    return;
+  }
+  const succeeded = Number(batch.succeeded_orders || 0);
+  const failed = Number(batch.failed_orders || 0);
+  const processed = succeeded + failed;
+  progress.hidden = false;
+  progress.classList.add(batch.status === "completed" && failed > 0 ? "completed-with-errors" : batch.status);
+  if (batch.status === "running") {
+    restart.hidden = false;
+    button.disabled = true;
+    text.textContent = `替换发货中 ${processed}/${batch.total_orders}`;
+    progress.textContent = `按最晚发货时间 · 最多 8 单并发 · 已处理 ${processed}/${batch.total_orders}${failed ? ` · 异常 ${failed}` : ""}${batch.current_order_sn ? ` · 当前队首 ${batch.current_order_sn}` : ""}`;
+    return;
+  }
+  restart.hidden = batch.status === "completed";
+  button.disabled = false;
+  text.textContent = batch.status === "stopped" ? "重新一键替换发货" : "一键替换发货";
+  if (batch.status === "stopped") {
+    progress.textContent = `旧批次已停止 · 重启后将继续处理 · ${batch.last_error || "替换发货失败"}`;
+  } else if (failed > 0) {
+    progress.textContent = `上一批已处理完成 · 成功 ${succeeded} · 异常 ${failed}`;
+  } else {
+    progress.textContent = `上一批已完成 ${succeeded}/${batch.total_orders}`;
+  }
+}
+
+async function restartSubstitutionBulkFulfillment() {
+  if (!state.substitutionBulkBatch || state.substitutionBulkBatch.status === "completed") return;
+  if (!window.confirm("重启当前替换发货批次？已有面单与发货账本会保留，仅重新调度未完成订单。")) return;
+  const button = $("#restart-substitution-bulk");
+  setLoading(button, true);
+  try {
+    const { data } = await api("/substitution-fulfillment/batches/restart", { method: "POST", body: JSON.stringify({ confirm: true }) });
+    state.substitutionBulkBatch = data;
+    renderSubstitutionBulkFulfillment();
+    toast("替换发货批次已安全重启");
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
+}
+
+async function startSubstitutionBulkFulfillment() {
+  if (state.substitutionBulkBatch?.status === "running") return;
+  const total = Number(state.substitutionMeta.total ?? state.substitutionOrders.length);
+  if (total < 1) {
+    toast("当前没有可替换发货的订单", true);
+    return;
+  }
+  if (!window.confirm(`将按最晚发货时间依次处理当前 ${total} 个替换订单，自动选择推荐仓库和符合优先级的物流；确认开始？`)) return;
+  const button = $("#substitution-bulk-fulfill");
+  setLoading(button, true);
+  try {
+    const { data } = await api("/substitution-fulfillment/batches", { method: "POST", body: JSON.stringify({ confirm: true }), timeoutMs: 60000 });
+    state.substitutionBulkBatch = data.batch;
+    renderSubstitutionBulkFulfillment();
+    toast(data.created ? `替换发货批次已启动，共 ${data.batch.total_orders} 单` : `已有替换批次正在执行：${data.batch.succeeded_orders}/${data.batch.total_orders}`);
+    await loadSubstitutionOrders();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+    renderSubstitutionBulkFulfillment();
   }
 }
 
@@ -1719,7 +1809,12 @@ const omsPlatformOrderStatusMeta = Object.freeze({
   2: { label: "处理中", caption: "领星已确认，校验通过后自动归档", tone: "" },
   3: { label: "已发货", caption: "领星已发货，校验通过后自动归档", tone: "" },
   missing: { label: "领星无匹配订单", caption: "Temu 已确认发货，但领星两个账户均未检索到同号平台订单", tone: "failed", countKey: -1 },
+  terminal: { label: "人工终态", caption: "无匹配订单经人工核实后已结案，不再进入自动查询", tone: "neutral", countKey: -2 },
 });
+
+function omsTerminalStatusText(status) {
+  return ({ manually_fulfilled: "已人工发货", cancelled: "订单已取消", not_required: "无需处理", other: "其他已结案" })[status] || "人工终态";
+}
 
 async function loadOMSPlatformOrders() {
   const status = state.omsPlatformOrderStatus;
@@ -1740,12 +1835,12 @@ function renderOMSPlatformOrders() {
   const status = state.omsPlatformOrderStatus;
   const meta = omsPlatformOrderStatusMeta[status];
   const counts = state.omsPlatformOrderMeta.status_counts || {};
-  for (const value of [0, 1, 2, 3, "missing"]) {
+  for (const value of [0, 1, 2, 3, "missing", "terminal"]) {
     const countKey = omsPlatformOrderStatusMeta[value].countKey ?? value;
     $(`#metric-oms-status-${value}`).textContent = counts[countKey] || 0;
   }
   $("#nav-oms-status-count").textContent = (counts[0] || 0) + (counts[1] || 0) + (counts[-1] || 0);
-  const statusPrefix = status === "missing" ? "Temu 已发货" : `状态 ${status}`;
+  const statusPrefix = status === "missing" ? "Temu 已发货" : status === "terminal" ? "人工结案" : `状态 ${status}`;
   $("#oms-status-heading").textContent = `${statusPrefix} · ${meta.label}`;
   $("#oms-status-caption").textContent = meta.caption;
   $("#oms-status-total").textContent = `共 ${state.omsPlatformOrderMeta.total ?? state.omsPlatformOrders.length} 条`;
@@ -1756,22 +1851,23 @@ function renderOMSPlatformOrders() {
   });
   $("#oms-status-rows").innerHTML = state.omsPlatformOrders.map((order) => {
     const missing = status === "missing";
+    const terminal = status === "terminal";
     const warehouseMatched = order.warehouse_code && order.send_warehouse_code && order.warehouse_code.toUpperCase() === order.send_warehouse_code.toUpperCase();
-    const warehouseText = missing ? order.warehouse_code || "买单仓未知" : order.send_warehouse_code || "等待领星分仓";
-    const archiveLabel = order.archived ? "已归档" : order.sync_status === "manual_required" ? missing ? "需人工补件" : "需人工处理" : order.sync_status === "verified" ? "待归档" : missing ? "等待领星同步" : "待领星推进";
-    const archiveTone = order.archived ? "" : order.sync_status === "manual_required" ? "failed" : "pending";
+    const warehouseText = missing || terminal ? order.warehouse_code || "买单仓未知" : order.send_warehouse_code || "等待领星分仓";
+    const archiveLabel = terminal ? omsTerminalStatusText(order.terminal_status) : order.archived ? "已归档" : order.sync_status === "manual_required" ? missing ? "需人工补件" : "需人工处理" : order.sync_status === "verified" ? "待归档" : missing ? "等待领星同步" : "待领星推进";
+    const archiveTone = terminal || order.archived ? "" : order.sync_status === "manual_required" ? "failed" : "pending";
     const labelReadyDuration = elapsedDuration(order.label_ready_at);
     const fulfillmentLabel = order.automatic_fulfillment ? "系统自动发货" : "非自动发货";
     const fulfillmentDetail = order.automatic_fulfillment
       ? labelReadyDuration === null ? "面单成功时间未记录" : `面单处理成功至今 ${labelReadyDuration}`
       : "";
-    const assignmentAction = status === 0 ? '<span class="status-badge pending">后台自动匹配</span>' : "-";
+    const assignmentAction = status === 0 ? '<span class="status-badge pending">后台自动匹配</span>' : missing ? `<button class="row-action manual-complete-action" data-oms-terminal="${escapeHtml(order.platform_order_sn)}">人工结案</button>` : "-";
     return `<tr>
       <td><div class="order-id"><strong>${escapeHtml(order.platform_order_sn)}</strong><small>${escapeHtml(order.tracking_number || "暂无跟踪号")}</small></div></td>
-      <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${missing ? "未检索到同号平台订单" : escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
+      <td><div class="order-id"><strong>${escapeHtml(order.oms_order_no || "-")}</strong><small>${terminal ? escapeHtml(order.terminal_note || "已人工结案") : missing ? "未检索到同号平台订单" : escapeHtml(order.audit_time || "尚未审核")}</small></div></td>
       <td><span class="status-badge neutral">${escapeHtml((order.oms_account || "-").toUpperCase())}</span></td>
       <td><span class="status-badge ${meta.tone}">${escapeHtml(statusPrefix)} · ${escapeHtml(meta.label)}</span></td>
-      <td><div class="order-id"><strong>${escapeHtml(warehouseText)}</strong><small>${missing ? "领星无发货仓信息" : warehouseMatched ? "与买单仓一致" : order.send_warehouse_code ? `买单仓 ${escapeHtml(order.warehouse_code)}` : "等待仓库信息"}</small></div></td>
+      <td><div class="order-id"><strong>${escapeHtml(warehouseText)}</strong><small>${missing || terminal ? "领星无发货仓信息" : warehouseMatched ? "与买单仓一致" : order.send_warehouse_code ? `买单仓 ${escapeHtml(order.warehouse_code)}` : "等待仓库信息"}</small></div></td>
       <td>${escapeHtml(order.tracking_number || "-")}</td>
       <td><div class="order-id"><span class="status-badge ${order.automatic_fulfillment ? "" : "neutral"}">${fulfillmentLabel}</span>${fulfillmentDetail ? `<small>${fulfillmentDetail}</small>` : ""}</div></td>
       <td><span class="status-badge ${archiveTone}">${archiveLabel}</span></td>
@@ -1781,6 +1877,39 @@ function renderOMSPlatformOrders() {
   }).join("");
   $("#oms-status-empty").hidden = state.omsPlatformOrders.length > 0;
   renderPager("#oms-status-pager", state.omsPlatformOrderMeta, "omsStatuses", loadOMSPlatformOrders);
+}
+
+function openOMSTerminalResolution(parentOrderSN) {
+  state.omsTerminalOrder = parentOrderSN;
+  $("#oms-terminal-form").reset();
+  $("#oms-terminal-order").textContent = `订单 ${parentOrderSN}`;
+  $("#oms-terminal-dialog").showModal();
+}
+
+async function completeOMSTerminalResolution(event) {
+  event.preventDefault();
+  const parentOrderSN = state.omsTerminalOrder;
+  const terminalStatus = $("#oms-terminal-status").value;
+  const terminalNote = $("#oms-terminal-note").value.trim();
+  const operationKey = await requireOperationKey(`确认领星无匹配订单 ${parentOrderSN} 的人工终态`);
+  if (!operationKey) return;
+  const button = event.submitter;
+  setLoading(button, true);
+  try {
+    await api(`/oms-platform-orders/${encodeURIComponent(parentOrderSN)}/terminal`, {
+      method: "POST",
+      sensitive: true,
+      body: JSON.stringify({ terminal_status: terminalStatus, terminal_note: terminalNote, confirm: true }),
+    });
+    $("#oms-terminal-dialog").close();
+    toast("领星无匹配订单已人工结案");
+    await Promise.all([loadOMSPlatformOrders(), loadShipments(), loadBulkFulfillment(), loadSubstitutionBulkFulfillment()]);
+  } catch (error) {
+    if (error.status === 401) forgetOperationKey();
+    toast(error.message, true);
+  } finally {
+    setLoading(button, false);
+  }
 }
 
 function setWarehouseAssignmentLoading(loading) {
@@ -2164,7 +2293,7 @@ function switchView(view) {
   $("#crumb-current").textContent = ({ orders: "待发货订单", substitutions: "可替换发货", combined: "可合并订单", "split-quotes": "拆包询价", labels: "自动处理中", exceptions: "自动发货异常", manual: "人工订单", ledger: "自动发货账本", "oms-statuses": "领星订单状态", shipments: "发货记录", warehouses: "仓库映射", "sku-warehouses": "SKU 发货仓库", "inventory-thresholds": "库存安全线", "tracking-statuses": "物流状态助手" })[view];
   $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible");
   if (view === "manual") loadManualOrders();
-  if (view === "substitutions") loadSubstitutionOrders();
+  if (view === "substitutions") { loadSubstitutionOrders(); loadSubstitutionBulkFulfillment(); }
   if (view === "combined") loadCombinedShipmentCandidates();
   if (view === "labels") loadShipmentQueue("labels");
   if (view === "exceptions") loadShipmentQueue("exceptions");
@@ -2198,6 +2327,8 @@ $("#menu-button").addEventListener("click", () => { $("#sidebar").classList.add(
 $("#backdrop").addEventListener("click", () => { $("#sidebar").classList.remove("open"); $("#backdrop").classList.remove("visible"); });
 $("#sync-orders").addEventListener("click", syncOrders);
 $("#bulk-fulfill").addEventListener("click", startBulkFulfillment);
+$("#substitution-bulk-fulfill").addEventListener("click", startSubstitutionBulkFulfillment);
+$("#restart-substitution-bulk").addEventListener("click", restartSubstitutionBulkFulfillment);
 $("#refresh-combined").addEventListener("click", loadCombinedShipmentCandidates);
 $("#refresh-substitutions").addEventListener("click", loadSubstitutionOrders);
 $("#substitution-search").addEventListener("input", () => { state.pages.substitutions = 1; clearTimeout(state.substitutionSearchTimer); state.substitutionSearchTimer = setTimeout(loadSubstitutionOrders, 250); });
@@ -2225,6 +2356,11 @@ $("#refresh-exceptions").addEventListener("click", () => loadShipmentQueue("exce
 $("#refresh-ledger").addEventListener("click", () => loadShipmentQueue("ledger"));
 $("#refresh-oms-statuses").addEventListener("click", loadOMSPlatformOrders);
 $("#oms-status-rows").addEventListener("click", (event) => {
+	const terminalButton = event.target.closest("[data-oms-terminal]");
+	if (terminalButton) {
+		openOMSTerminalResolution(terminalButton.dataset.omsTerminal);
+		return;
+	}
   const button = event.target.closest("[data-assign-order]");
   if (button) openWarehouseAssignment(button.dataset.assignOrder);
 });
@@ -2244,8 +2380,10 @@ $("#warehouse-assignment-dialog").addEventListener("close", () => {
   $("#warehouse-assignment-load-error").hidden = true;
   $("#warehouse-assignment-error").hidden = true;
 });
+$("#oms-terminal-form").addEventListener("submit", completeOMSTerminalResolution);
+$("#oms-terminal-cancel").addEventListener("click", () => $("#oms-terminal-dialog").close());
 $$('[data-oms-status]').forEach((button) => button.addEventListener("click", () => {
-  state.omsPlatformOrderStatus = button.dataset.omsStatus === "missing" ? "missing" : Number(button.dataset.omsStatus);
+  state.omsPlatformOrderStatus = ["missing", "terminal"].includes(button.dataset.omsStatus) ? button.dataset.omsStatus : Number(button.dataset.omsStatus);
   state.pages.omsStatuses = 1;
   loadOMSPlatformOrders();
 }));
@@ -2272,9 +2410,9 @@ $("#shop-select").addEventListener("change", (event) => {
 async function initialize() {
   renderTrackingStatusMappings();
   await loadShops();
-  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadSubstitutionOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment(), loadOMSPlatformOrders()]);
+  await Promise.all([checkHealth(), loadToken(), loadOrders(), loadSubstitutionOrders(), loadManualOrders(), loadWarehouses(), loadShipments(), loadBulkFulfillment(), loadSubstitutionBulkFulfillment(), loadOMSPlatformOrders()]);
 }
 
 void initialize();
-setInterval(() => { loadOrders(); loadShipments(); loadBulkFulfillment(); if ($("#view-oms-statuses").classList.contains("active")) loadOMSPlatformOrders(); }, 5000);
+setInterval(() => { loadOrders(); loadShipments(); loadBulkFulfillment(); loadSubstitutionBulkFulfillment(); if ($("#view-oms-statuses").classList.contains("active")) loadOMSPlatformOrders(); }, 5000);
 setInterval(() => { loadToken(); loadManualOrders(); }, 60000);

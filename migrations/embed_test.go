@@ -54,8 +54,21 @@ func TestInitSQLIncludesSkippedAutoFulfillmentStatus(t *testing.T) {
 }
 
 func TestInitSQLIncludesOMSManualRequiredStatus(t *testing.T) {
-	if !strings.Contains(InitSQL, "'failed', 'manual_required'") {
+	if !strings.Contains(InitSQL, "'failed', 'manual_required', 'terminal'") {
 		t.Fatal("InitSQL is missing the OMS manual-required terminal status")
+	}
+}
+
+func TestInitSQLIncludesFulfillmentModesAndOMSTerminalFields(t *testing.T) {
+	for _, fragment := range []string{
+		"fulfillment_mode IN ('direct', 'substitution')",
+		"temu_bulk_fulfillment_batches_one_running_mode_idx",
+		"terminal_status text NOT NULL DEFAULT ''",
+		"'manually_fulfilled', 'cancelled', 'not_required', 'other'",
+	} {
+		if !strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL is missing %q", fragment)
+		}
 	}
 }
 

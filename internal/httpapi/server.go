@@ -89,7 +89,11 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("POST /api/auto-fulfillment/batches", s.startBulkFulfillment)
 	mux.HandleFunc("POST /api/auto-fulfillment/batches/restart", s.restartBulkFulfillment)
 	mux.HandleFunc("GET /api/auto-fulfillment/batches/latest", s.latestBulkFulfillment)
+	mux.HandleFunc("POST /api/substitution-fulfillment/batches", s.startSubstitutionBulkFulfillment)
+	mux.HandleFunc("POST /api/substitution-fulfillment/batches/restart", s.restartSubstitutionBulkFulfillment)
+	mux.HandleFunc("GET /api/substitution-fulfillment/batches/latest", s.latestSubstitutionBulkFulfillment)
 	mux.HandleFunc("GET /api/oms-platform-orders", s.listOMSPlatformOrders)
+	mux.HandleFunc("POST /api/oms-platform-orders/{parentOrderSN}/terminal", s.requireOperationKey(s.resolveOMSPlatformOrderTerminal))
 	mux.HandleFunc("GET /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment-preview", s.previewOMSPlatformOrderWarehouseAssignment)
 	mux.HandleFunc("POST /api/oms-platform-orders/{parentOrderSN}/warehouse-assignment", s.assignOMSPlatformOrderWarehouse)
 	mux.HandleFunc("GET /api/shipments", s.listShipments)
@@ -621,6 +625,63 @@ func (s *Server) latestBulkFulfillment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
 }
 
+func (s *Server) startSubstitutionBulkFulfillment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !input.Confirm {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "confirm=true is required"})
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.StartSubstitutionBulkFulfillment(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, response{Success: true, Data: item})
+}
+
+func (s *Server) restartSubstitutionBulkFulfillment(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Confirm bool `json:"confirm"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !input.Confirm {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "confirm=true is required"})
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.RestartSubstitutionBulkFulfillment(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, response{Success: true, Data: item})
+}
+
+func (s *Server) latestSubstitutionBulkFulfillment(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.LatestSubstitutionBulkFulfillment(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, response{Success: true, Data: map[string]any{}})
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
 func (s *Server) autoShip(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.context(r)
 	defer cancel()
@@ -769,14 +830,40 @@ func (s *Server) assignOMSPlatformOrderWarehouse(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
 }
 
+func (s *Server) resolveOMSPlatformOrderTerminal(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		TerminalStatus string `json:"terminal_status"`
+		TerminalNote   string `json:"terminal_note"`
+		Confirm        bool   `json:"confirm"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if !input.Confirm {
+		writeJSON(w, http.StatusBadRequest, response{Success: false, Error: "confirm=true is required"})
+		return
+	}
+	ctx, cancel := s.context(r)
+	defer cancel()
+	item, err := s.service.ResolveMissingOMSPlatformOrder(ctx, r.PathValue("parentOrderSN"), input.TerminalStatus, input.TerminalNote)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: item})
+}
+
 func parseOMSPlatformOrderStatus(value string) (int, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "missing" {
 		return -1, nil
 	}
+	if value == "terminal" {
+		return -2, nil
+	}
 	status, err := strconv.Atoi(value)
 	if err != nil || status < 0 || status > 3 {
-		return 0, errors.New("status must be missing, 0, 1, 2, or 3")
+		return 0, errors.New("status must be terminal, missing, 0, 1, 2, or 3")
 	}
 	return status, nil
 }
