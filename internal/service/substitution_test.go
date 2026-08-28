@@ -2,11 +2,13 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"temu-api-manager/internal/inventory"
 	"temu-api-manager/internal/model"
+	"temu-api-manager/internal/temu"
 )
 
 func TestSingleUnitSubstitutionMatchUsesOriginalOrderQuantity(t *testing.T) {
@@ -86,6 +88,46 @@ func TestSubstitutionProblemMessagesPreservesClearUniqueReasons(t *testing.T) {
 	got := substitutionProblemMessages([]error{errors.New("DPS002: 库存不足"), errors.New("DPS002: 库存不足"), errors.New("ARP_EAST: 产品配对未审核")})
 	if len(got) != 2 || got[0] != "DPS002: 库存不足" || got[1] != "ARP_EAST: 产品配对未审核" {
 		t.Fatalf("unexpected reasons: %#v", got)
+	}
+}
+
+func TestSelectSubstitutionPriceQuotesAppliesPriorityBeforeReducingWarehouse(t *testing.T) {
+	candidates := []substitutionPriceCandidate{
+		substitutionCandidate("DPS002", "SpeedX", 3.03, 3),
+		substitutionCandidate("DPS002", "GOFO", 3.24, 1),
+		substitutionCandidate("DPS004", "GOFO", 4.34, 1),
+	}
+
+	quotes := selectSubstitutionPriceQuotes(candidates)
+	if len(quotes) != 2 {
+		t.Fatalf("quote count = %d, want 2: %#v", len(quotes), quotes)
+	}
+	if quotes[0].WarehouseKey != "DPS002" || quotes[0].ShippingCompany != "GOFO" || quotes[0].Amount != 3.24 {
+		t.Fatalf("expected DPS002 GOFO recommendation, got %#v", quotes[0])
+	}
+}
+
+func TestSelectSubstitutionPriceQuotesUsesCheapestWhenPriorityExceedsPriceWindow(t *testing.T) {
+	candidates := []substitutionPriceCandidate{
+		substitutionCandidate("DPS002", "SpeedX", 3.03, 3),
+		substitutionCandidate("DPS002", "GOFO", 3.54, 1),
+	}
+
+	quotes := selectSubstitutionPriceQuotes(candidates)
+	if len(quotes) != 1 || quotes[0].ShippingCompany != "SpeedX" {
+		t.Fatalf("expected SpeedX outside the $0.50 priority window, got %#v", quotes)
+	}
+}
+
+func substitutionCandidate(warehouseKey, carrier string, amount float64, priority int) substitutionPriceCandidate {
+	channelID := int64(priority)
+	channel := temu.ShippingChannel{
+		ChannelID: channelID, ShipCompanyID: channelID + 100,
+		ShippingCompanyName: carrier, EstimatedAmount: fmt.Sprintf("%.2f", amount), EstimatedCurrencyCode: "USD",
+	}
+	return substitutionPriceCandidate{
+		candidate: autoChannelCandidate{warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, channel: channel, amount: amount, priority: priority},
+		quote:     SubstitutionPriceQuote{WarehouseKey: warehouseKey, TemuWarehouseID: "temu-" + warehouseKey, ShippingCompany: carrier, ChannelID: channelID, ShipCompanyID: channelID + 100, Amount: amount, Currency: "USD"},
 	}
 }
 

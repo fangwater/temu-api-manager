@@ -42,6 +42,11 @@ type SubstitutionPriceQuote struct {
 	Currency          string  `json:"currency"`
 }
 
+type substitutionPriceCandidate struct {
+	quote     SubstitutionPriceQuote
+	candidate autoChannelCandidate
+}
+
 type SubstitutionPriceOption struct {
 	Kind      string                                `json:"kind"`
 	Items     []inventory.PackageSpecResolveRequest `json:"items"`
@@ -281,11 +286,11 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	if len(candidates) == 0 {
 		return QuoteResult{}, fmt.Errorf("仓库 %s 没有符合规则的 Temu 面单渠道", request.WarehouseKey)
 	}
-	choice, _, err := selectAutomaticChannel(candidates, request.PreferredChannelID)
+	choice, carrierReason, err := selectAutomaticChannel(candidates, request.PreferredChannelID)
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	reason := fmt.Sprintf("组合替代发货：平台 SKU %s 使用组合 %s；尺寸重量取自组合配置；仓库已通过替代库存和 OMS 产品配对校验", platformSKU, combination.Name)
+	reason := fmt.Sprintf("组合替代发货：平台 SKU %s 使用组合 %s；尺寸重量取自组合配置；仓库已通过替代库存和 OMS 产品配对校验；%s", platformSKU, combination.Name, carrierReason)
 	selection.Reason = reason
 	for index := range allowed {
 		if allowed[index].ChannelID == choice.channel.ChannelID {
@@ -534,6 +539,7 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 	results := make(chan result, len(supportedOMSWarehouseKeys))
 	jobs := 0
 	problems := make([]error, 0)
+	candidates := make([]substitutionPriceCandidate, 0)
 	pairingByAccount := make(map[string]inventory.ProductPairingValidation)
 	for _, key := range supportedOMSWarehouseKeys {
 		selection, err := selectWarehouseForPriceComparison(decision, quantities, key)
@@ -602,32 +608,22 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 			if currency == "" {
 				currency = "USD"
 			}
-			option.Quotes = append(option.Quotes, SubstitutionPriceQuote{
-				WarehouseKey: current.selection.WarehouseKey, WarehouseName: current.selection.WarehouseName,
-				TemuWarehouseID: current.warehouse.ID, TemuWarehouseName: current.warehouse.Name,
-				ShippingCompany: channel.ShippingCompanyName, ShipLogisticsType: channel.ShipLogisticsType,
-				ChannelID: channel.ChannelID, ShipCompanyID: channel.ShipCompanyID, Amount: amount, Currency: currency,
+			candidates = append(candidates, substitutionPriceCandidate{
+				candidate: autoChannelCandidate{
+					warehouseKey: current.selection.WarehouseKey, temuWarehouseID: current.warehouse.ID,
+					channel: channel, amount: amount,
+					priority: configuredCarrierPriority(policies[current.selection.WarehouseKey], carrierCode(channel)),
+				},
+				quote: SubstitutionPriceQuote{
+					WarehouseKey: current.selection.WarehouseKey, WarehouseName: current.selection.WarehouseName,
+					TemuWarehouseID: current.warehouse.ID, TemuWarehouseName: current.warehouse.Name,
+					ShippingCompany: channel.ShippingCompanyName, ShipLogisticsType: channel.ShipLogisticsType,
+					ChannelID: channel.ChannelID, ShipCompanyID: channel.ShipCompanyID, Amount: amount, Currency: currency,
+				},
 			})
 		}
 	}
-	sort.SliceStable(option.Quotes, func(i, j int) bool {
-		if math.Abs(option.Quotes[i].Amount-option.Quotes[j].Amount) > 0.000001 {
-			return option.Quotes[i].Amount < option.Quotes[j].Amount
-		}
-		return option.Quotes[i].WarehouseKey < option.Quotes[j].WarehouseKey
-	})
-	if len(option.Quotes) > 0 {
-		cheapestByWarehouse := make([]SubstitutionPriceQuote, 0, len(supportedOMSWarehouseKeys))
-		seenWarehouses := make(map[string]bool, len(supportedOMSWarehouseKeys))
-		for _, quote := range option.Quotes {
-			if seenWarehouses[quote.WarehouseKey] {
-				continue
-			}
-			seenWarehouses[quote.WarehouseKey] = true
-			cheapestByWarehouse = append(cheapestByWarehouse, quote)
-		}
-		option.Quotes = cheapestByWarehouse
-	}
+	option.Quotes = selectSubstitutionPriceQuotes(candidates)
 	option.Problems = substitutionProblemMessages(problems)
 	if len(option.Quotes) == 0 {
 		if len(option.Problems) > 0 {
@@ -644,6 +640,60 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 	best := option.Quotes[0]
 	option.BestQuote = &best
 	return option
+}
+
+func selectSubstitutionPriceQuotes(candidates []substitutionPriceCandidate) []SubstitutionPriceQuote {
+	byWarehouse := make(map[string][]substitutionPriceCandidate)
+	for _, item := range candidates {
+		byWarehouse[item.candidate.warehouseKey] = append(byWarehouse[item.candidate.warehouseKey], item)
+	}
+	warehouseKeys := make([]string, 0, len(byWarehouse))
+	for warehouseKey := range byWarehouse {
+		warehouseKeys = append(warehouseKeys, warehouseKey)
+	}
+	sort.Strings(warehouseKeys)
+
+	warehouseChoices := make([]substitutionPriceCandidate, 0, len(warehouseKeys))
+	for _, warehouseKey := range warehouseKeys {
+		items := byWarehouse[warehouseKey]
+		automatic := make([]autoChannelCandidate, 0, len(items))
+		for _, item := range items {
+			automatic = append(automatic, item.candidate)
+		}
+		choice, _, err := selectAutomaticChannel(automatic, 0)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			if sameChannelCandidate(item.candidate, choice) {
+				warehouseChoices = append(warehouseChoices, item)
+				break
+			}
+		}
+	}
+	if len(warehouseChoices) == 0 {
+		return []SubstitutionPriceQuote{}
+	}
+
+	automatic := make([]autoChannelCandidate, 0, len(warehouseChoices))
+	for _, item := range warehouseChoices {
+		automatic = append(automatic, item.candidate)
+	}
+	best, _, _ := selectAutomaticChannel(automatic, 0)
+	sort.SliceStable(warehouseChoices, func(i, j int) bool {
+		leftBest := sameChannelCandidate(warehouseChoices[i].candidate, best)
+		rightBest := sameChannelCandidate(warehouseChoices[j].candidate, best)
+		if leftBest != rightBest {
+			return leftBest
+		}
+		return betterChannelCandidate(warehouseChoices[i].candidate, warehouseChoices[j].candidate)
+	})
+
+	quotes := make([]SubstitutionPriceQuote, 0, len(warehouseChoices))
+	for _, item := range warehouseChoices {
+		quotes = append(quotes, item.quote)
+	}
+	return quotes
 }
 
 func substitutionOMSPairingRequest(account string, combination inventory.SKUCombination) inventory.ProductPairingValidationRequest {

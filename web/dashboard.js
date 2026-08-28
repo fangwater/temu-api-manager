@@ -369,7 +369,7 @@ function renderSubstitutionPriceOption(option, title, selectable = false) {
   const problems = available ? (option?.unavailable_reasons || []).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("") : "";
   return `<header><div><small>${title === "直接发货" ? "原 SKU" : "替代组合"}</small><h3>${title}</h3></div><span class="status-badge ${available ? "" : "neutral"}">${available ? "可发货" : unavailableLabel}</span></header>
     <div class="substitution-option-items">${items}</div>
-    <div class="substitution-best-price ${available ? "" : "empty"}"><small>最低面单成本</small><strong>${available ? escapeHtml(formatSubstitutionMoney(best)) : ""}</strong><span>${available ? `${escapeHtml(best.warehouse_name || best.warehouse_key)} · ${escapeHtml(best.shipping_company_name)}` : escapeHtml(option?.reason || "")}</span></div>
+    <div class="substitution-best-price ${available ? "" : "empty"}"><small>推荐面单成本</small><strong>${available ? escapeHtml(formatSubstitutionMoney(best)) : ""}</strong><span>${available ? `${escapeHtml(best.warehouse_name || best.warehouse_key)} · ${escapeHtml(best.shipping_company_name)}` : escapeHtml(option?.reason || "")}</span></div>
     <div class="substitution-warehouse-prices">${quotes}</div>${problems ? `<div class="substitution-problems"><small>其他仓库不可用</small><ul>${problems}</ul></div>` : ""}`;
 }
 
@@ -414,7 +414,7 @@ async function purchaseSubstitutionLabel() {
     const { data } = await api(`/substitution-orders/${encodeURIComponent(parentOrderSN)}/purchase`, {
       method: "POST",
       timeoutMs: 120000,
-      body: JSON.stringify({ warehouse_key: quote.warehouse_key, channel_id: quote.channel_id, confirm: true }),
+      body: JSON.stringify({ warehouse_key: quote.warehouse_key, confirm: true }),
     });
     toast(data.duplicate ? "该订单已有发货记录，未重复提交" : "组合面单购买请求已提交，后续确认与正常发货一致");
     $("#substitution-dialog").close();
