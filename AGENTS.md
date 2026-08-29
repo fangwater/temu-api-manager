@@ -32,6 +32,8 @@
 ## Production Deployment
 
 - Treat a request to modify this project as authorization to deploy the verified change to the live Temu service, unless the user explicitly asks for code-only or local-preview work.
+- The activity-price worker, snapshot API, and frontend are owned by `/home/fanghaizhou/pangu-sales-manager` on the sales server.
+- Keep `/temu/activity-prices/` as a redirect only. Do not add an activity worker or effective-price API back to this service.
 - After implementation and tests pass, rebuild and restart the existing live service instead of stopping at a local or mocked preview.
 - Discover and use the host's existing service-manager and deployment commands. Do not start a second production worker because concurrent workers can sync, fulfill, or purchase labels twice.
 - Before deployment, verify the exact service unit, executable, working directory, and listening port with read-only checks.
