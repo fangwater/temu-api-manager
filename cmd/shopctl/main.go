@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,10 @@ func main() {
 	code := flag.String("code", "", "shop code")
 	name := flag.String("name", "", "shop display name")
 	schema := flag.String("schema", "", "PostgreSQL schema")
+	appKeyEnv := flag.String("app-key-env", "TEMU_APP_KEY", "environment variable containing the app key")
+	appSecretEnv := flag.String("app-secret-env", "TEMU_APP_SECRET", "environment variable containing the app secret")
+	accessTokenEnv := flag.String("access-token-env", "", "environment variable containing the access token; defaults to standard input")
+	enabled := flag.Bool("enabled", true, "enable the registered shop")
 	check := flag.Bool("check", false, "check a stored shop access token")
 	flag.Parse()
 	cfg, err := config.Load()
@@ -39,17 +44,21 @@ func main() {
 	if *code == "" || *name == "" || *schema == "" {
 		fatal("code, name, and schema are required")
 	}
-	tokenBytes, err := io.ReadAll(io.LimitReader(os.Stdin, 16*1024))
+	appKey, err := credentialFromEnv(*appKeyEnv)
 	if err != nil {
-		fatal("read access token: " + err.Error())
+		fatal(err.Error())
 	}
-	accessToken := strings.TrimSpace(string(tokenBytes))
-	if accessToken == "" {
-		fatal("access token must be provided on standard input")
+	appSecret, err := credentialFromEnv(*appSecretEnv)
+	if err != nil {
+		fatal(err.Error())
+	}
+	accessToken, err := readAccessToken(*accessTokenEnv, os.Stdin)
+	if err != nil {
+		fatal(err.Error())
 	}
 	if err := registry.Upsert(ctx, shopregistry.Shop{
 		Code: *code, Name: *name, SchemaName: *schema,
-		AppKey: cfg.AppKey, AppSecret: cfg.AppSecret, AccessToken: accessToken, Enabled: true,
+		AppKey: appKey, AppSecret: appSecret, AccessToken: accessToken, Enabled: *enabled,
 	}); err != nil {
 		fatal(err.Error())
 	}
@@ -61,7 +70,7 @@ func main() {
 	if err := destination.Migrate(ctx); err != nil {
 		fatal(err.Error())
 	}
-	fmt.Printf("shop %s stored with encrypted credentials\n", *code)
+	fmt.Printf("shop %s stored with encrypted credentials; enabled=%t\n", *code, *enabled)
 }
 
 func checkShop(ctx context.Context, registry *shopregistry.Registry, cfg config.Config, code string) {
@@ -86,6 +95,35 @@ func checkShop(ctx context.Context, registry *shopregistry.Registry, cfg config.
 		return
 	}
 	fatal("shop not found")
+}
+
+var envNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
+func credentialFromEnv(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if !envNamePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid credential environment variable name %q", name)
+	}
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return "", fmt.Errorf("%s is required", name)
+	}
+	return value, nil
+}
+
+func readAccessToken(envName string, input io.Reader) (string, error) {
+	if strings.TrimSpace(envName) != "" {
+		return credentialFromEnv(envName)
+	}
+	tokenBytes, err := io.ReadAll(io.LimitReader(input, 16*1024))
+	if err != nil {
+		return "", fmt.Errorf("read access token: %w", err)
+	}
+	accessToken := strings.TrimSpace(string(tokenBytes))
+	if accessToken == "" {
+		return "", fmt.Errorf("access token must be provided on standard input or with -access-token-env")
+	}
+	return accessToken, nil
 }
 
 func fatal(message string) {
