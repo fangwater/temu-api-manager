@@ -7,7 +7,7 @@ The Temu console uses one URL, one Go process, and one PostgreSQL database. Oper
 | PANDA HOMES | `panda-homes` | `temu_panda_homes` | Enabled | `/temu/` |
 | PANDA BUY | `panda-buy` | `temu_panda_buy` | Enabled | `/temu/` |
 | Hans Living | `hans-living` | `temu_hans_living` | Enabled | `/temu/` |
-| WovenWhispers | `woven-whispers` | `temu_woven_whispers` | Disabled pending token refresh | `/temu/` |
+| WovenWhispers | `woven-whispers` | `temu_woven_whispers` | Enabled | `/temu/` |
 
 Temu credentials are encrypted in `public.temu_shops`. The AES-GCM master key remains in `.temu_shop_credentials_key` with mode `600`; it must not be committed or copied into logs.
 
