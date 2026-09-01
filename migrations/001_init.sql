@@ -458,3 +458,31 @@ CREATE TABLE IF NOT EXISTS temu_bulk_fulfillment_items (
 
 CREATE INDEX IF NOT EXISTS temu_bulk_fulfillment_items_next_idx
     ON temu_bulk_fulfillment_items(batch_id, status, sequence_no);
+
+CREATE TABLE IF NOT EXISTS temu_bulk_inventory_budgets (
+    batch_id text NOT NULL REFERENCES temu_bulk_fulfillment_batches(id) ON DELETE CASCADE,
+    oms_warehouse_key text NOT NULL,
+    warehouse_sku text NOT NULL,
+    capacity integer NOT NULL CHECK (capacity >= 0),
+    reserved_quantity integer NOT NULL DEFAULT 0 CHECK (reserved_quantity >= 0 AND reserved_quantity <= capacity),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(batch_id, oms_warehouse_key, warehouse_sku)
+);
+
+CREATE TABLE IF NOT EXISTS temu_bulk_inventory_reservations (
+    batch_id text NOT NULL REFERENCES temu_bulk_fulfillment_batches(id) ON DELETE CASCADE,
+    parent_order_sn text NOT NULL REFERENCES temu_orders(parent_order_sn),
+    oms_warehouse_key text NOT NULL,
+    warehouse_sku text NOT NULL,
+    quantity integer NOT NULL CHECK (quantity > 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY(batch_id, parent_order_sn, warehouse_sku),
+    FOREIGN KEY(batch_id, oms_warehouse_key, warehouse_sku)
+        REFERENCES temu_bulk_inventory_budgets(batch_id, oms_warehouse_key, warehouse_sku)
+        ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS temu_bulk_inventory_reservations_order_idx
+    ON temu_bulk_inventory_reservations(parent_order_sn, batch_id);

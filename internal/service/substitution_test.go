@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,6 +45,27 @@ func TestExpandSubstitutionQuantitiesMultipliesRecipe(t *testing.T) {
 	got := expandSubstitutionQuantities(combination, 3)
 	if got["SKU-10"] != 6 || got["CLIP"] != 3 {
 		t.Fatalf("unexpected quantities: %#v", got)
+	}
+}
+
+func TestBulkInventoryReservationItemsPreserveTwoPieceRecipeAndAvailableStock(t *testing.T) {
+	requestPayload, err := json.Marshal(storedQuoteRequest{Substitution: &storedSubstitutionQuote{
+		Quantities: map[string]int{"SKU-10": 2},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := inventory.Selection{Decision: inventory.DecisionResponse{Records: []inventory.SKUDecision{{
+		SKU: "SKU-10", Regions: []inventory.Region{{Warehouses: []inventory.Warehouse{
+			{Key: "DPS002", Available: 180},
+		}}},
+	}}}}
+	items, err := bulkInventoryReservationItems(selection, "DPS002", requestPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].WarehouseSKU != "SKU-10" || items[0].Quantity != 2 || items[0].AvailableStock != 180 {
+		t.Fatalf("unexpected reservation items: %#v", items)
 	}
 }
 

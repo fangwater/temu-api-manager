@@ -3,11 +3,16 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 
 	"temu-api-manager/internal/model"
 
 	"github.com/jackc/pgx/v5"
 )
+
+var ErrBulkInventoryCapacity = errors.New("替换批次库存额度不足")
 
 const bulkBatchSelect = `SELECT b.id,b.fulfillment_mode,b.status,b.total_orders,b.succeeded_orders,b.failed_orders,
 	coalesce((SELECT i.parent_order_sn FROM temu_bulk_fulfillment_items i
@@ -273,6 +278,216 @@ func (p *Postgres) MarkBulkFulfillmentItemRunning(ctx context.Context, batchID, 
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+func (p *Postgres) ReserveBulkSubstitutionInventory(ctx context.Context, parentOrderSN, warehouseKey string, rawItems []model.BulkInventoryReservationItem) (bool, error) {
+	parentOrderSN = strings.TrimSpace(parentOrderSN)
+	warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
+	items, err := normalizeBulkInventoryReservationItems(rawItems)
+	if err != nil {
+		return false, err
+	}
+	if parentOrderSN == "" || warehouseKey == "" {
+		return false, errors.New("bulk inventory reservation requires an order and warehouse")
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var batchID string
+	err = tx.QueryRow(ctx, `
+		SELECT item.batch_id
+		FROM temu_bulk_fulfillment_items item
+		JOIN temu_bulk_fulfillment_batches batch ON batch.id=item.batch_id
+		WHERE item.parent_order_sn=$1 AND item.status='running'
+		  AND batch.status='running' AND batch.fulfillment_mode='substitution'
+		ORDER BY batch.created_at DESC LIMIT 1
+		FOR UPDATE OF batch
+	`, parentOrderSN).Scan(&batchID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	existing, err := bulkInventoryReservations(ctx, tx, batchID, parentOrderSN)
+	if err != nil {
+		return false, err
+	}
+	if sameBulkInventoryReservation(existing, warehouseKey, items) {
+		return true, tx.Commit(ctx)
+	}
+	if len(existing) > 0 {
+		if err := releaseBulkInventoryReservation(ctx, tx, batchID, parentOrderSN); err != nil {
+			return false, err
+		}
+	}
+
+	for _, item := range items {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO temu_bulk_inventory_budgets(batch_id,oms_warehouse_key,warehouse_sku,capacity)
+			VALUES($1,$2,$3,$4)
+			ON CONFLICT(batch_id,oms_warehouse_key,warehouse_sku) DO NOTHING
+		`, batchID, warehouseKey, item.WarehouseSKU, item.AvailableStock); err != nil {
+			return false, err
+		}
+		var capacity, reserved int
+		if err := tx.QueryRow(ctx, `
+			SELECT capacity,reserved_quantity FROM temu_bulk_inventory_budgets
+			WHERE batch_id=$1 AND oms_warehouse_key=$2 AND warehouse_sku=$3
+			FOR UPDATE
+		`, batchID, warehouseKey, item.WarehouseSKU).Scan(&capacity, &reserved); err != nil {
+			return false, err
+		}
+		if !bulkInventoryCapacityAllows(capacity, reserved, item.Quantity) {
+			return false, fmt.Errorf("%w: warehouse %s SKU %s has %d units left in this batch, requires %d",
+				ErrBulkInventoryCapacity, warehouseKey, item.WarehouseSKU, capacity-reserved, item.Quantity)
+		}
+	}
+	for _, item := range items {
+		if _, err := tx.Exec(ctx, `
+			UPDATE temu_bulk_inventory_budgets
+			SET reserved_quantity=reserved_quantity+$4,updated_at=now()
+			WHERE batch_id=$1 AND oms_warehouse_key=$2 AND warehouse_sku=$3
+		`, batchID, warehouseKey, item.WarehouseSKU, item.Quantity); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO temu_bulk_inventory_reservations(
+				batch_id,parent_order_sn,oms_warehouse_key,warehouse_sku,quantity
+			) VALUES($1,$2,$3,$4,$5)
+		`, batchID, parentOrderSN, warehouseKey, item.WarehouseSKU, item.Quantity); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit(ctx)
+}
+
+func (p *Postgres) ReleaseBulkSubstitutionInventory(ctx context.Context, parentOrderSN string) (bool, error) {
+	parentOrderSN = strings.TrimSpace(parentOrderSN)
+	if parentOrderSN == "" {
+		return false, errors.New("bulk inventory release requires an order")
+	}
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var batchID string
+	err = tx.QueryRow(ctx, `
+		SELECT reservation.batch_id
+		FROM temu_bulk_inventory_reservations reservation
+		JOIN temu_bulk_fulfillment_batches batch ON batch.id=reservation.batch_id
+		WHERE reservation.parent_order_sn=$1 AND batch.status='running'
+		ORDER BY batch.created_at DESC LIMIT 1
+		FOR UPDATE OF batch
+	`, parentOrderSN).Scan(&batchID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := releaseBulkInventoryReservation(ctx, tx, batchID, parentOrderSN); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+type bulkInventoryReservation struct {
+	WarehouseKey string
+	WarehouseSKU string
+	Quantity     int
+}
+
+func bulkInventoryReservations(ctx context.Context, tx pgx.Tx, batchID, parentOrderSN string) ([]bulkInventoryReservation, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT oms_warehouse_key,warehouse_sku,quantity
+		FROM temu_bulk_inventory_reservations
+		WHERE batch_id=$1 AND parent_order_sn=$2
+		ORDER BY warehouse_sku
+	`, batchID, parentOrderSN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]bulkInventoryReservation, 0)
+	for rows.Next() {
+		var item bulkInventoryReservation
+		if err := rows.Scan(&item.WarehouseKey, &item.WarehouseSKU, &item.Quantity); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func releaseBulkInventoryReservation(ctx context.Context, tx pgx.Tx, batchID, parentOrderSN string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE temu_bulk_inventory_budgets budget
+		SET reserved_quantity=budget.reserved_quantity-released.quantity,updated_at=now()
+		FROM temu_bulk_inventory_reservations released
+		WHERE released.batch_id=$1 AND released.parent_order_sn=$2
+		  AND budget.batch_id=released.batch_id
+		  AND budget.oms_warehouse_key=released.oms_warehouse_key
+		  AND budget.warehouse_sku=released.warehouse_sku
+	`, batchID, parentOrderSN); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		DELETE FROM temu_bulk_inventory_reservations WHERE batch_id=$1 AND parent_order_sn=$2
+	`, batchID, parentOrderSN)
+	return err
+}
+
+func normalizeBulkInventoryReservationItems(rawItems []model.BulkInventoryReservationItem) ([]model.BulkInventoryReservationItem, error) {
+	quantities := make(map[string]int, len(rawItems))
+	available := make(map[string]int, len(rawItems))
+	for _, item := range rawItems {
+		sku := strings.TrimSpace(item.WarehouseSKU)
+		if sku == "" || item.Quantity <= 0 || item.AvailableStock < 0 {
+			return nil, errors.New("bulk inventory reservation items are invalid")
+		}
+		quantities[sku] += item.Quantity
+		if previous, exists := available[sku]; exists && previous != item.AvailableStock {
+			return nil, errors.New("bulk inventory reservation has conflicting available stock")
+		}
+		available[sku] = item.AvailableStock
+	}
+	if len(quantities) == 0 {
+		return nil, errors.New("bulk inventory reservation items are required")
+	}
+	skus := make([]string, 0, len(quantities))
+	for sku := range quantities {
+		skus = append(skus, sku)
+	}
+	sort.Strings(skus)
+	items := make([]model.BulkInventoryReservationItem, 0, len(skus))
+	for _, sku := range skus {
+		items = append(items, model.BulkInventoryReservationItem{
+			WarehouseSKU: sku, Quantity: quantities[sku], AvailableStock: available[sku],
+		})
+	}
+	return items, nil
+}
+
+func sameBulkInventoryReservation(existing []bulkInventoryReservation, warehouseKey string, items []model.BulkInventoryReservationItem) bool {
+	if len(existing) != len(items) {
+		return false
+	}
+	for index := range items {
+		if existing[index].WarehouseKey != warehouseKey || existing[index].WarehouseSKU != items[index].WarehouseSKU || existing[index].Quantity != items[index].Quantity {
+			return false
+		}
+	}
+	return true
+}
+
+func bulkInventoryCapacityAllows(capacity, reserved, requested int) bool {
+	return capacity >= 0 && reserved >= 0 && requested > 0 && reserved <= capacity-requested
 }
 
 func (p *Postgres) FinishBulkFulfillmentItem(ctx context.Context, batchID, parentOrderSN, status, lastError string) (model.BulkFulfillmentBatch, error) {

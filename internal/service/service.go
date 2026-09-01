@@ -2457,10 +2457,16 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			} else if !comparison.Replacement.Available || comparison.Replacement.BestQuote == nil {
 				purchaseErr = errors.New("替代组合当前没有可用仓库和物流渠道")
 			} else {
-				purchased, purchaseErr = s.PurchaseSubstitution(ctx, SubstitutionPurchaseRequest{
-					ParentOrderSN: job.ParentOrderSN,
-					WarehouseKey:  comparison.Replacement.BestQuote.WarehouseKey,
-				})
+				for _, candidate := range comparison.Replacement.Quotes {
+					purchased, purchaseErr = s.PurchaseSubstitution(ctx, SubstitutionPurchaseRequest{
+						ParentOrderSN:      job.ParentOrderSN,
+						WarehouseKey:       candidate.WarehouseKey,
+						PreferredChannelID: candidate.ChannelID,
+					})
+					if purchaseErr == nil || purchased.Shipment.ID != "" || !errors.Is(purchaseErr, store.ErrBulkInventoryCapacity) {
+						break
+					}
+				}
 			}
 		} else {
 			quote, quoteErr := s.Quote(ctx, QuoteRequest{ParentOrderSN: job.ParentOrderSN, Region: "auto"})
@@ -2497,7 +2503,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			}
 			_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, purchaseErr.Error())
 			if nextStatus == "failed" {
-				return purchaseErr
+				return s.releaseFailedSubstitutionInventory(ctx, job, purchaseErr)
 			}
 		}
 	} else if err != nil {
@@ -2516,6 +2522,9 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 					nextStatus = "failed"
 				}
 				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, recoverErr.Error())
+				if nextStatus == "failed" {
+					return s.releaseFailedSubstitutionInventory(ctx, job, recoverErr)
+				}
 				return recoverErr
 			}
 			if shipment.Status != "submission_unknown" {
@@ -2597,7 +2606,8 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 					return err
 				}
 				message := shipment.ErrorMessage + "；Temu 已创建失败包裹，已安全转入人工处理，未重复购单"
-				return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "skipped", message)
+				updateErr := s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "skipped", message)
+				return s.releaseFailedSubstitutionInventory(ctx, job, updateErr)
 			}
 			if automaticCarrierFallbackAllowed(shipment) {
 				failedCarrier := carrierCode(temu.ShippingChannel{ShippingCompanyName: shipment.ShippingCompanyName, ShipLogisticsType: shipment.ShipLogisticsType})
@@ -2624,12 +2634,24 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			if message == "" {
 				message = "Temu label purchase failed"
 			}
-			return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "failed", message)
+			updateErr := s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "failed", message)
+			return s.releaseFailedSubstitutionInventory(ctx, job, updateErr)
 		default:
 			return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "failed", "unsupported shipment status: "+shipment.Status)
 		}
 	}
 	return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "waiting_oms", "")
+}
+
+func (s *Service) releaseFailedSubstitutionInventory(ctx context.Context, job model.AutoFulfillmentJob, cause error) error {
+	if job.FulfillmentMode != model.FulfillmentModeSubstitution {
+		return cause
+	}
+	_, releaseErr := s.store.ReleaseBulkSubstitutionInventory(context.WithoutCancel(ctx), job.ParentOrderSN)
+	if releaseErr != nil {
+		return errors.Join(cause, fmt.Errorf("release failed substitution inventory reservation: %w", releaseErr))
+	}
+	return cause
 }
 
 func (s *Service) GetShipment(ctx context.Context, id string) (model.Shipment, error) {

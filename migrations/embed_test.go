@@ -72,6 +72,20 @@ func TestInitSQLIncludesFulfillmentModesAndOMSTerminalFields(t *testing.T) {
 	}
 }
 
+func TestInitSQLIncludesAtomicBulkInventoryReservations(t *testing.T) {
+	for _, fragment := range []string{
+		"temu_bulk_inventory_budgets",
+		"reserved_quantity integer NOT NULL DEFAULT 0",
+		"reserved_quantity <= capacity",
+		"temu_bulk_inventory_reservations",
+		"PRIMARY KEY(batch_id, parent_order_sn, warehouse_sku)",
+	} {
+		if !strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL is missing %q", fragment)
+		}
+	}
+}
+
 func TestInitSQLRequiresWarehouseOMSAccountOwnership(t *testing.T) {
 	for _, fragment := range []string{
 		"ADD COLUMN IF NOT EXISTS oms_account text",

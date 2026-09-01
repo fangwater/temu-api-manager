@@ -187,7 +187,55 @@ func (s *Service) PurchaseSubstitution(ctx context.Context, request Substitution
 	if err != nil {
 		return PurchaseResult{}, err
 	}
-	return s.PurchaseAndQueueCompletion(ctx, quoted.Quote.ID)
+	items, err := bulkInventoryReservationItems(quoted.WarehouseSelection, quoted.Quote.OMSWarehouseKey, quoted.Quote.RequestPayload)
+	if err != nil {
+		return PurchaseResult{}, err
+	}
+	reserved, err := s.store.ReserveBulkSubstitutionInventory(ctx, quoted.Quote.ParentOrderSN, quoted.Quote.OMSWarehouseKey, items)
+	if err != nil {
+		return PurchaseResult{}, err
+	}
+	result, purchaseErr := s.PurchaseAndQueueCompletion(ctx, quoted.Quote.ID)
+	if reserved && result.Shipment.ID == "" {
+		if _, lookupErr := s.store.ShipmentForOrder(context.WithoutCancel(ctx), quoted.Quote.ParentOrderSN); errors.Is(lookupErr, pgx.ErrNoRows) {
+			_, releaseErr := s.store.ReleaseBulkSubstitutionInventory(context.WithoutCancel(ctx), quoted.Quote.ParentOrderSN)
+			if releaseErr != nil {
+				purchaseErr = errors.Join(purchaseErr, fmt.Errorf("release unused bulk inventory reservation: %w", releaseErr))
+			}
+		} else if lookupErr != nil {
+			purchaseErr = errors.Join(purchaseErr, fmt.Errorf("verify shipment before releasing bulk inventory reservation: %w", lookupErr))
+		}
+	}
+	return result, purchaseErr
+}
+
+func bulkInventoryReservationItems(selection inventory.Selection, warehouseKey string, requestPayload json.RawMessage) ([]model.BulkInventoryReservationItem, error) {
+	var saved storedQuoteRequest
+	if err := json.Unmarshal(requestPayload, &saved); err != nil || saved.Substitution == nil {
+		return nil, errors.New("组合替代报价缺少批次库存预占信息")
+	}
+	warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
+	availableBySKU := make(map[string]int, len(saved.Substitution.Quantities))
+	for _, record := range selection.Decision.Records {
+		for _, region := range record.Regions {
+			for _, warehouse := range region.Warehouses {
+				if strings.EqualFold(strings.TrimSpace(warehouse.Key), warehouseKey) {
+					availableBySKU[strings.TrimSpace(record.SKU)] = int(math.Floor(warehouse.Available))
+				}
+			}
+		}
+	}
+	items := make([]model.BulkInventoryReservationItem, 0, len(saved.Substitution.Quantities))
+	for _, sku := range sortedKeys(saved.Substitution.Quantities) {
+		available, exists := availableBySKU[sku]
+		if !exists {
+			return nil, fmt.Errorf("库存查询没有返回仓库 %s 的组合 SKU %s", warehouseKey, sku)
+		}
+		items = append(items, model.BulkInventoryReservationItem{
+			WarehouseSKU: sku, Quantity: saved.Substitution.Quantities[sku], AvailableStock: available,
+		})
+	}
+	return items, nil
 }
 
 func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPurchaseRequest) (QuoteResult, error) {

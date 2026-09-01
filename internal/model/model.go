@@ -56,6 +56,13 @@ type BulkFulfillmentItem struct {
 	LastError     string    `json:"last_error,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
+
+type BulkInventoryReservationItem struct {
+	WarehouseSKU   string
+	Quantity       int
+	AvailableStock int
+}
+
 type AutoFulfillmentJob struct {
 	ParentOrderSN   string     `json:"parent_order_sn"`
 	FulfillmentMode string     `json:"fulfillment_mode"`
