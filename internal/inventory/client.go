@@ -25,20 +25,20 @@ func NewClient(url string, timeout time.Duration) *Client {
 }
 
 type Warehouse struct {
-	Key             string  `json:"warehouse_key"`
-	Code            string  `json:"wh_code"`
-	Name            string  `json:"warehouse_name"`
-	Region          string  `json:"region"`
-	Provider        string  `json:"provider"`
-	Active          bool    `json:"active"`
-	QueryStatus     string  `json:"query_status"`
-	SKUFound        bool    `json:"sku_found"`
-	Available       float64 `json:"available_amount"`
-	Selectable      bool    `json:"selectable"`
-	Recommended     bool    `json:"recommended"`
-	ReasonCode      string  `json:"reason_code"`
-	Reason          string  `json:"reason"`
-	ShopSKUDisabled bool    `json:"shop_sku_disabled,omitempty"`
+	Key                 string  `json:"warehouse_key"`
+	Code                string  `json:"wh_code"`
+	Name                string  `json:"warehouse_name"`
+	Region              string  `json:"region"`
+	Provider            string  `json:"provider"`
+	Active              bool    `json:"active"`
+	QueryStatus         string  `json:"query_status"`
+	SKUFound            bool    `json:"sku_found"`
+	Available           float64 `json:"available_amount"`
+	Selectable          bool    `json:"selectable"`
+	Recommended         bool    `json:"recommended"`
+	ReasonCode          string  `json:"reason_code"`
+	Reason              string  `json:"reason"`
+	PlatformSKUDisabled bool    `json:"platform_sku_disabled,omitempty"`
 }
 
 type Region struct {
@@ -384,15 +384,11 @@ func (c *Client) managerEndpoint(path string) (string, error) {
 	return strings.TrimSuffix(c.url, decisionSuffix) + path, nil
 }
 
-type ShopInventoryThresholds struct {
+type PlatformInventoryThresholds struct {
 	Platform       string    `json:"platform"`
-	ShopCode       string    `json:"shop_code"`
-	ShopName       string    `json:"shop_name"`
-	Enabled        bool      `json:"enabled"`
 	EastThreshold  float64   `json:"east_threshold"`
 	WestThreshold  float64   `json:"west_threshold"`
 	TotalThreshold float64   `json:"total_threshold"`
-	Customized     bool      `json:"customized"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -412,68 +408,108 @@ type SKUInventoryThreshold struct {
 }
 
 type InventoryThresholdPage struct {
-	Records           []SKUInventoryThreshold `json:"records"`
-	Total             int                     `json:"total"`
-	Page              int                     `json:"page"`
-	PageSize          int                     `json:"page_size"`
-	Pages             int                     `json:"pages"`
-	DefaultThresholds ShopInventoryThresholds `json:"default_thresholds"`
+	Records           []SKUInventoryThreshold     `json:"records"`
+	Total             int                         `json:"total"`
+	Page              int                         `json:"page"`
+	PageSize          int                         `json:"page_size"`
+	Pages             int                         `json:"pages"`
+	DefaultThresholds PlatformInventoryThresholds `json:"default_thresholds"`
 }
 
-func (c *Client) ShopInventoryThresholds(ctx context.Context, platform, shopCode string) (ShopInventoryThresholds, error) {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+type CarrierPolicy struct {
+	WarehouseKey string `json:"warehouse_key"`
+	CarrierCode  string `json:"carrier_code"`
+	Priority     int    `json:"priority"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type WarehouseCarrierPolicies struct {
+	WarehouseKey string          `json:"warehouse_key"`
+	WarehouseSKU string          `json:"warehouse_sku,omitempty"`
+	Customized   bool            `json:"customized"`
+	Source       string          `json:"source"`
+	Carriers     []CarrierPolicy `json:"carriers"`
+}
+
+func (c *Client) CarrierPolicies(ctx context.Context, platform, warehouseSKU string) ([]WarehouseCarrierPolicies, error) {
+	platform, err := normalizePlatformScope(platform)
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return nil, err
 	}
-	endpoint, err := c.managerEndpoint("/inventory-thresholds/defaults")
+	endpoint, err := c.managerEndpoint("/fulfillment-policies/carriers")
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return nil, err
 	}
-	var result ShopInventoryThresholds
-	if err := c.doJSON(ctx, http.MethodGet, appendShopQuery(endpoint, platform, shopCode), nil, platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
+	values := url.Values{}
+	values.Set("platform", platform)
+	if warehouseSKU = strings.TrimSpace(warehouseSKU); warehouseSKU != "" {
+		values.Set("warehouse_sku", warehouseSKU)
+	}
+	var result []WarehouseCarrierPolicies
+	if err := c.doJSON(ctx, http.MethodGet, endpoint+"?"+values.Encode(), nil, "", "", &result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
 
-func (c *Client) UpdateShopInventoryThresholds(ctx context.Context, platform, shopCode string, thresholds InventoryThresholds) (ShopInventoryThresholds, error) {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+func (c *Client) DisabledWarehouseKeys(ctx context.Context, platform string, warehouseSKUs []string) (map[string]map[string]bool, error) {
+	platform, err := normalizePlatformScope(platform)
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return nil, err
+	}
+	endpoint, err := c.managerEndpoint("/fulfillment-policies/skus/query")
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]any{"platform": platform, "skus": warehouseSKUs})
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]map[string]bool)
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, body, "", "", &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *Client) PlatformInventoryThresholds(ctx context.Context, platform string) (PlatformInventoryThresholds, error) {
+	platform, err := normalizePlatformScope(platform)
+	if err != nil {
+		return PlatformInventoryThresholds{}, err
 	}
 	endpoint, err := c.managerEndpoint("/inventory-thresholds/defaults")
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return PlatformInventoryThresholds{}, err
+	}
+	var result PlatformInventoryThresholds
+	if err := c.doJSON(ctx, http.MethodGet, appendPlatformQuery(endpoint, platform), nil, "", "", &result); err != nil {
+		return PlatformInventoryThresholds{}, err
+	}
+	return result, nil
+}
+
+func (c *Client) UpdatePlatformInventoryThresholds(ctx context.Context, platform string, thresholds InventoryThresholds) (PlatformInventoryThresholds, error) {
+	platform, err := normalizePlatformScope(platform)
+	if err != nil {
+		return PlatformInventoryThresholds{}, err
+	}
+	endpoint, err := c.managerEndpoint("/inventory-thresholds/defaults")
+	if err != nil {
+		return PlatformInventoryThresholds{}, err
 	}
 	body, err := json.Marshal(thresholds)
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return PlatformInventoryThresholds{}, err
 	}
-	var result ShopInventoryThresholds
-	if err := c.doJSON(ctx, http.MethodPatch, appendShopQuery(endpoint, platform, shopCode), body, platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
-	}
-	return result, nil
-}
-
-func (c *Client) ResetShopInventoryThresholds(ctx context.Context, platform, shopCode string) (ShopInventoryThresholds, error) {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
-	if err != nil {
-		return ShopInventoryThresholds{}, err
-	}
-	endpoint, err := c.managerEndpoint("/inventory-thresholds/defaults/reset")
-	if err != nil {
-		return ShopInventoryThresholds{}, err
-	}
-	var result ShopInventoryThresholds
-	if err := c.doJSON(ctx, http.MethodPost, appendShopQuery(endpoint, platform, shopCode), nil, platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
+	var result PlatformInventoryThresholds
+	if err := c.doJSON(ctx, http.MethodPatch, appendPlatformQuery(endpoint, platform), body, "", "", &result); err != nil {
+		return PlatformInventoryThresholds{}, err
 	}
 	return result, nil
 }
 
-func (c *Client) ListShopSKUInventoryThresholds(ctx context.Context, platform, shopCode, query string, page, pageSize int) (InventoryThresholdPage, error) {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+func (c *Client) ListPlatformSKUInventoryThresholds(ctx context.Context, platform, query string, page, pageSize int) (InventoryThresholdPage, error) {
+	platform, err := normalizePlatformScope(platform)
 	if err != nil {
 		return InventoryThresholdPage{}, err
 	}
@@ -489,21 +525,20 @@ func (c *Client) ListShopSKUInventoryThresholds(ctx context.Context, platform, s
 	}
 	values := url.Values{}
 	values.Set("platform", platform)
-	values.Set("shop", shopCode)
 	values.Set("page", strconv.Itoa(page))
 	values.Set("page_size", strconv.Itoa(pageSize))
 	if query = strings.TrimSpace(query); query != "" {
 		values.Set("q", query)
 	}
 	var result InventoryThresholdPage
-	if err := c.doJSON(ctx, http.MethodGet, endpoint+"?"+values.Encode(), nil, platform, shopCode, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, endpoint+"?"+values.Encode(), nil, "", "", &result); err != nil {
 		return InventoryThresholdPage{}, err
 	}
 	return result, nil
 }
 
-func (c *Client) UpdateShopSKUInventoryThreshold(ctx context.Context, platform, shopCode, warehouseSKU string, thresholds InventoryThresholds) (SKUInventoryThreshold, error) {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+func (c *Client) UpdatePlatformSKUInventoryThreshold(ctx context.Context, platform, warehouseSKU string, thresholds InventoryThresholds) (SKUInventoryThreshold, error) {
+	platform, err := normalizePlatformScope(platform)
 	if err != nil {
 		return SKUInventoryThreshold{}, err
 	}
@@ -520,14 +555,14 @@ func (c *Client) UpdateShopSKUInventoryThreshold(ctx context.Context, platform, 
 		return SKUInventoryThreshold{}, err
 	}
 	var result SKUInventoryThreshold
-	if err := c.doJSON(ctx, http.MethodPatch, appendShopQuery(endpoint, platform, shopCode), body, platform, shopCode, &result); err != nil {
+	if err := c.doJSON(ctx, http.MethodPatch, appendPlatformQuery(endpoint, platform), body, "", "", &result); err != nil {
 		return SKUInventoryThreshold{}, err
 	}
 	return result, nil
 }
 
-func (c *Client) ResetShopSKUInventoryThreshold(ctx context.Context, platform, shopCode, warehouseSKU string) error {
-	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+func (c *Client) ResetPlatformSKUInventoryThreshold(ctx context.Context, platform, warehouseSKU string) error {
+	platform, err := normalizePlatformScope(platform)
 	if err != nil {
 		return err
 	}
@@ -540,7 +575,7 @@ func (c *Client) ResetShopSKUInventoryThreshold(ctx context.Context, platform, s
 		return err
 	}
 	var result map[string]bool
-	return c.doJSON(ctx, http.MethodPost, appendShopQuery(endpoint, platform, shopCode), nil, platform, shopCode, &result)
+	return c.doJSON(ctx, http.MethodPost, appendPlatformQuery(endpoint, platform), nil, "", "", &result)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, endpoint string, body []byte, platform, shopCode string, destination any) error {
@@ -605,6 +640,22 @@ func normalizeShopScope(platform, shopCode string) (string, string, error) {
 		return "", "", errors.New("platform must be temu or shein")
 	}
 	return platform, shopCode, nil
+}
+
+func normalizePlatformScope(platform string) (string, error) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform != "temu" && platform != "shein" {
+		return "", errors.New("platform must be temu or shein")
+	}
+	return platform, nil
+}
+
+func appendPlatformQuery(endpoint, platform string) string {
+	values := url.Values{"platform": []string{platform}}
+	if strings.Contains(endpoint, "?") {
+		return endpoint + "&" + values.Encode()
+	}
+	return endpoint + "?" + values.Encode()
 }
 
 func appendShopQuery(endpoint, platform, shopCode string) string {

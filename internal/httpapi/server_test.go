@@ -44,6 +44,14 @@ func TestStaticHandlerRejectsUnknownAPI(t *testing.T) {
 	}
 }
 
+func TestInventoryThresholdDefaultResetIsGone(t *testing.T) {
+	response := httptest.NewRecorder()
+	inventoryThresholdDefaultResetGone(response, httptest.NewRequest(http.MethodPost, "/api/inventory-thresholds/defaults/reset", nil))
+	if response.Code != http.StatusGone {
+		t.Fatalf("got status %d, want %d", response.Code, http.StatusGone)
+	}
+}
+
 func TestCombinedShipmentCandidatesEndpointReturnsNormalizedGroups(t *testing.T) {
 	var upstreamRequest map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +97,7 @@ func TestCombinedShipmentCandidatesEndpointReturnsNormalizedGroups(t *testing.T)
 	}
 }
 
-func TestPolicyUpdatesSkipOperationKeyOnly(t *testing.T) {
+func TestMovedPolicyEndpointsAreGone(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := New(nil, "secret", "panda-homes", "PANDA HOMES", t.TempDir(), time.Second, logger)
 
@@ -99,8 +107,8 @@ func TestPolicyUpdatesSkipOperationKeyOnly(t *testing.T) {
 		body string
 		want int
 	}{
-		{name: "carrier policy", path: "/api/carrier-policies/DPS002", body: "{", want: http.StatusBadRequest},
-		{name: "SKU warehouse policy", path: "/api/sku-warehouse-rules", body: "{", want: http.StatusBadRequest},
+		{name: "carrier policy", path: "/api/carrier-policies/DPS002", body: "{", want: http.StatusGone},
+		{name: "SKU warehouse policy", path: "/api/sku-warehouse-rules", body: "{", want: http.StatusGone},
 		{name: "warehouse mapping", path: "/api/warehouse-mappings/DPS002", body: "{}", want: http.StatusUnauthorized},
 	}
 	for _, test := range tests {

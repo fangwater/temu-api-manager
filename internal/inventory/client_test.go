@@ -183,30 +183,30 @@ func TestQueryForShopSendsShopIdentity(t *testing.T) {
 	}
 }
 
-func TestShopInventoryThresholdsUsesWarehouseManagerEndpoint(t *testing.T) {
+func TestPlatformInventoryThresholdsUsesWarehouseManagerEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/v1/inventory-thresholds/defaults" {
 			http.NotFound(writer, request)
 			return
 		}
-		if request.URL.Query().Get("platform") != "temu" || request.URL.Query().Get("shop") != "panda-buy" {
+		if request.URL.Query().Get("platform") != "temu" || request.URL.Query().Has("shop") {
 			t.Fatalf("query = %s", request.URL.RawQuery)
 		}
-		if request.Header.Get("X-Temu-Shop") != "panda-buy" {
-			t.Fatalf("X-Temu-Shop = %q", request.Header.Get("X-Temu-Shop"))
+		if request.Header.Get("X-Temu-Shop") != "" {
+			t.Fatalf("unexpected X-Temu-Shop = %q", request.Header.Get("X-Temu-Shop"))
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"success":true,"data":{"platform":"temu","shop_code":"panda-buy","east_threshold":8,"west_threshold":9,"total_threshold":10,"customized":true}}`)
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"platform":"temu","east_threshold":8,"west_threshold":9,"total_threshold":10}}`)
 	}))
 	defer server.Close()
 
 	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
-	item, err := client.ShopInventoryThresholds(context.Background(), "temu", "panda-buy")
+	item, err := client.PlatformInventoryThresholds(context.Background(), "temu")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.ShopCode != "panda-buy" || item.EastThreshold != 8 || !item.Customized {
-		t.Fatalf("unexpected shop thresholds: %#v", item)
+	if item.Platform != "temu" || item.EastThreshold != 8 || item.TotalThreshold != 10 {
+		t.Fatalf("unexpected platform thresholds: %#v", item)
 	}
 }
 

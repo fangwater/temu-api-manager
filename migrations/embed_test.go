@@ -120,18 +120,10 @@ func TestInitSQLIncludesConfigurableWarehouseMappingState(t *testing.T) {
 	}
 }
 
-func TestInitSQLIncludesShopWarehouseCarrierPolicies(t *testing.T) {
-	for _, fragment := range []string{"public.temu_carrier_policies", "shop_code text NOT NULL", "oms_warehouse_key text NOT NULL", "PRIMARY KEY (shop_code, oms_warehouse_key, carrier_code)"} {
-		if !strings.Contains(InitSQL, fragment) {
-			t.Fatalf("InitSQL is missing %q", fragment)
-		}
-	}
-}
-
-func TestInitSQLIncludesShopSKUDisabledWarehouses(t *testing.T) {
-	for _, fragment := range []string{"public.temu_sku_disabled_warehouses", "warehouse_sku text NOT NULL", "PRIMARY KEY (shop_code, warehouse_sku, oms_warehouse_key)"} {
-		if !strings.Contains(InitSQL, fragment) {
-			t.Fatalf("InitSQL is missing %q", fragment)
+func TestInitSQLDoesNotRecreateMovedFulfillmentPolicies(t *testing.T) {
+	for _, fragment := range []string{"public.temu_carrier_policies", "public.temu_sku_disabled_warehouses"} {
+		if strings.Contains(InitSQL, fragment) {
+			t.Fatalf("InitSQL still owns moved table %q", fragment)
 		}
 	}
 }

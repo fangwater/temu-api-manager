@@ -13,58 +13,6 @@ import (
 	"temu-api-manager/internal/temu"
 )
 
-func TestValidateSKUWarehouseRuleUsesNegativeConfiguration(t *testing.T) {
-	warehouseSKU, disabled, err := validateSKUWarehouseRule(" SKU-1 ", []string{"dps004", "DPS002", "DPS004"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if warehouseSKU != "SKU-1" {
-		t.Fatalf("warehouse SKU = %q", warehouseSKU)
-	}
-	if !reflect.DeepEqual(disabled, []string{"DPS002", "DPS004"}) {
-		t.Fatalf("disabled warehouses = %#v", disabled)
-	}
-	if _, disabled, err := validateSKUWarehouseRule("SKU-2", nil); err != nil || len(disabled) != 0 {
-		t.Fatalf("empty configuration must restore the all-warehouse default: disabled=%v err=%v", disabled, err)
-	}
-	if _, _, err := validateSKUWarehouseRule("", nil); err == nil {
-		t.Fatal("empty warehouse SKU must be rejected")
-	}
-	if _, _, err := validateSKUWarehouseRule("SKU-1", []string{"UNKNOWN"}); err == nil {
-		t.Fatal("unknown warehouse must be rejected")
-	}
-}
-
-func TestApplySKUWarehouseRestrictionsFallsBackToAllowedWarehouse(t *testing.T) {
-	decision := skuWarehouseRuleDecision()
-	applySKUWarehouseRestrictions(&decision, map[string]map[string]bool{
-		"SKU-1": {"DPS002": true},
-	})
-	selection, err := inventory.SelectWarehouse(decision, "east", map[string]int{"SKU-1": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.WarehouseKey != "ARP_EAST" {
-		t.Fatalf("selected warehouse = %q, want ARP_EAST", selection.WarehouseKey)
-	}
-	disabled := decision.Records[0].Regions[0].Warehouses[0]
-	if disabled.Selectable || !disabled.ShopSKUDisabled || disabled.ReasonCode != "SHOP_SKU_WAREHOUSE_DISABLED" {
-		t.Fatalf("disabled warehouse was not annotated: %#v", disabled)
-	}
-}
-
-func TestApplySKUWarehouseRestrictionsLeavesDefaultUnchanged(t *testing.T) {
-	decision := skuWarehouseRuleDecision()
-	applySKUWarehouseRestrictions(&decision, nil)
-	selection, err := inventory.SelectWarehouse(decision, "east", map[string]int{"SKU-1": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.WarehouseKey != "DPS002" {
-		t.Fatalf("default warehouse = %q, want DPS002", selection.WarehouseKey)
-	}
-}
-
 func TestSKUWarehouseRestrictionsBlockPurchaseAndManualizeNoCoverage(t *testing.T) {
 	order := model.Order{ParentOrderSN: "PO-1", Lines: []model.OrderLine{{ExtCode: "SKU-1", Quantity: 1}}}
 	if err := validateOrderWarehouseRestrictions(order, "DPS002", nil); err != nil {
@@ -77,12 +25,18 @@ func TestSKUWarehouseRestrictionsBlockPurchaseAndManualizeNoCoverage(t *testing.
 	}
 
 	decision := skuWarehouseRuleDecision()
-	applySKUWarehouseRestrictions(&decision, map[string]map[string]bool{
-		"SKU-1": {"DPS002": true, "ARP_EAST": true, "DPS004": true, "ARP_WEST": true},
-	})
+	for regionIndex := range decision.Records[0].Regions {
+		decision.Records[0].Regions[regionIndex].RecommendedWarehouseKey = ""
+		for warehouseIndex := range decision.Records[0].Regions[regionIndex].Warehouses {
+			warehouse := &decision.Records[0].Regions[regionIndex].Warehouses[warehouseIndex]
+			warehouse.Selectable = false
+			warehouse.Recommended = false
+			warehouse.PlatformSKUDisabled = true
+		}
+	}
 	classification := warehouseClassificationFromDecision(order, decision, nil)
 	if classification.Status != "manual" || !contains(classification.Categories, manualReasonSKUWarehousePolicy) {
-		t.Fatalf("classification = %#v, want shop SKU warehouse manual review", classification)
+		t.Fatalf("classification = %#v, want platform SKU warehouse manual review", classification)
 	}
 }
 
@@ -330,7 +284,7 @@ func candidate(id int64, warehouseKey, carrier, amount string) autoChannelCandid
 		warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, amount: price(amount),
 		channel: temu.ShippingChannel{ChannelID: id, ShipCompanyID: id + 100, ShippingCompanyName: carrier, EstimatedAmount: amount, EstimatedCurrencyCode: "USD"},
 	}
-	item.priority = configuredCarrierPriority(defaultCarrierPolicies(warehouseKey), carrierCode(item.channel))
+	item.priority = configuredCarrierPriority(testCarrierPolicies(warehouseKey), carrierCode(item.channel))
 	return item
 }
 
@@ -457,7 +411,7 @@ func TestBuildLabelPurchaseChoiceMarksManualSelectionRank(t *testing.T) {
 }
 
 func TestFilterChannelsByCarrierPolicyDisablesWarehouseCarrier(t *testing.T) {
-	policies := defaultCarrierPolicies("DPS002")
+	policies := testCarrierPolicies("DPS002")
 	policies[0].Enabled = false
 	allowed, rejected := filterChannelsByCarrierPolicy([]temu.ShippingChannel{
 		{ChannelID: 1, ShippingCompanyName: "GOFO"},
@@ -468,14 +422,6 @@ func TestFilterChannelsByCarrierPolicyDisablesWarehouseCarrier(t *testing.T) {
 	}
 	if len(rejected) != 1 || rejected[0].ChannelID != 1 || !strings.Contains(rejected[0].UnavailableReason, "DPS002") {
 		t.Fatalf("unexpected rejected channels: %#v", rejected)
-	}
-}
-
-func TestValidateCarrierPoliciesRequiresCompleteUniqueOrder(t *testing.T) {
-	policies := defaultCarrierPolicies("DPS002")
-	policies[1].Priority = policies[0].Priority
-	if _, err := validateCarrierPolicies("DPS002", policies); err == nil {
-		t.Fatal("duplicate priorities must fail")
 	}
 }
 
@@ -492,6 +438,14 @@ func TestFilterAutomaticChannelsEnforcesWhitelistAndNoSignature(t *testing.T) {
 	if len(rejected) != 3 {
 		t.Fatalf("unexpected rejected channels: %#v", rejected)
 	}
+}
+
+func testCarrierPolicies(warehouseKey string) []model.CarrierPolicy {
+	policies := make([]model.CarrierPolicy, 0, len(supportedAutomaticCarrierCodes))
+	for index, code := range supportedAutomaticCarrierCodes {
+		policies = append(policies, model.CarrierPolicy{WarehouseKey: warehouseKey, CarrierCode: code, Priority: index + 1, Enabled: true})
+	}
+	return policies
 }
 
 func TestShippingRequestsForceNoSignature(t *testing.T) {

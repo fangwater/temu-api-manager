@@ -72,46 +72,24 @@ func (s *Service) queryInventory(ctx context.Context, quantities map[string]int)
 	return s.inventory.QueryForShop(ctx, "temu", s.shopCode, quantities)
 }
 
-func (s *Service) ShopInventoryThresholds(ctx context.Context) (inventory.ShopInventoryThresholds, error) {
-	if s.shopCode == "" {
-		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
-	}
-	return s.inventory.ShopInventoryThresholds(ctx, "temu", s.shopCode)
+func (s *Service) PlatformInventoryThresholds(ctx context.Context) (inventory.PlatformInventoryThresholds, error) {
+	return s.inventory.PlatformInventoryThresholds(ctx, "temu")
 }
 
-func (s *Service) UpdateShopInventoryThresholds(ctx context.Context, thresholds inventory.InventoryThresholds) (inventory.ShopInventoryThresholds, error) {
-	if s.shopCode == "" {
-		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
-	}
-	return s.inventory.UpdateShopInventoryThresholds(ctx, "temu", s.shopCode, thresholds)
+func (s *Service) UpdatePlatformInventoryThresholds(ctx context.Context, thresholds inventory.InventoryThresholds) (inventory.PlatformInventoryThresholds, error) {
+	return s.inventory.UpdatePlatformInventoryThresholds(ctx, "temu", thresholds)
 }
 
-func (s *Service) ResetShopInventoryThresholds(ctx context.Context) (inventory.ShopInventoryThresholds, error) {
-	if s.shopCode == "" {
-		return inventory.ShopInventoryThresholds{}, errors.New("shop code is required")
-	}
-	return s.inventory.ResetShopInventoryThresholds(ctx, "temu", s.shopCode)
+func (s *Service) ListPlatformSKUInventoryThresholds(ctx context.Context, query string, page, pageSize int) (inventory.InventoryThresholdPage, error) {
+	return s.inventory.ListPlatformSKUInventoryThresholds(ctx, "temu", query, page, pageSize)
 }
 
-func (s *Service) ListShopSKUInventoryThresholds(ctx context.Context, query string, page, pageSize int) (inventory.InventoryThresholdPage, error) {
-	if s.shopCode == "" {
-		return inventory.InventoryThresholdPage{}, errors.New("shop code is required")
-	}
-	return s.inventory.ListShopSKUInventoryThresholds(ctx, "temu", s.shopCode, query, page, pageSize)
+func (s *Service) UpdatePlatformSKUInventoryThreshold(ctx context.Context, warehouseSKU string, thresholds inventory.InventoryThresholds) (inventory.SKUInventoryThreshold, error) {
+	return s.inventory.UpdatePlatformSKUInventoryThreshold(ctx, "temu", warehouseSKU, thresholds)
 }
 
-func (s *Service) UpdateShopSKUInventoryThreshold(ctx context.Context, warehouseSKU string, thresholds inventory.InventoryThresholds) (inventory.SKUInventoryThreshold, error) {
-	if s.shopCode == "" {
-		return inventory.SKUInventoryThreshold{}, errors.New("shop code is required")
-	}
-	return s.inventory.UpdateShopSKUInventoryThreshold(ctx, "temu", s.shopCode, warehouseSKU, thresholds)
-}
-
-func (s *Service) ResetShopSKUInventoryThreshold(ctx context.Context, warehouseSKU string) error {
-	if s.shopCode == "" {
-		return errors.New("shop code is required")
-	}
-	return s.inventory.ResetShopSKUInventoryThreshold(ctx, "temu", s.shopCode, warehouseSKU)
+func (s *Service) ResetPlatformSKUInventoryThreshold(ctx context.Context, warehouseSKU string) error {
+	return s.inventory.ResetPlatformSKUInventoryThreshold(ctx, "temu", warehouseSKU)
 }
 
 type TokenStatus struct {
@@ -420,9 +398,6 @@ func (s *Service) ClassifyWarehouseQueue(ctx context.Context, limit int) (Wareho
 	}
 	for _, group := range groups {
 		decision, queryErr := s.queryInventory(ctx, group.quantities)
-		if queryErr == nil {
-			queryErr = s.applyShopSKUWarehouseRules(ctx, &decision)
-		}
 		for _, order := range group.orders {
 			classification := warehouseClassificationFromDecision(order, decision, queryErr)
 			if err := s.persistWarehouseClassification(ctx, order, classification); err != nil {
@@ -482,14 +457,14 @@ func warehouseClassificationFromDecision(order model.Order, decision inventory.D
 	if inventoryManual {
 		item.Categories = append(item.Categories, manualReasonInventoryRule)
 	}
-	if !inventoryManual && len(unboundSKUs) == 0 && decisionHasShopSKUWarehouseRestrictions(decision) {
+	if !inventoryManual && len(unboundSKUs) == 0 && decisionHasPlatformSKUWarehouseRestrictions(decision) {
 		quantities, _ := warehouseQuantities(order)
 		_, eastErr := inventory.SelectWarehouse(decision, "east", quantities)
 		_, westErr := inventory.SelectWarehouse(decision, "west", quantities)
 		if eastErr != nil && westErr != nil {
 			item.Categories = append(item.Categories, manualReasonSKUWarehousePolicy)
 			item.ReasonDetails = append(item.ReasonDetails,
-				"当前店铺的 SKU 发货仓库规则未保留可覆盖订单全部商品的仓库")
+				"Temu 平台的 SKU 发货仓库规则未保留可覆盖订单全部商品的仓库")
 		}
 	}
 	if !decision.PackageResolution.Complete {
@@ -687,215 +662,30 @@ func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) err
 
 var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
 
-func (s *Service) ListCarrierPolicies(ctx context.Context) ([]model.WarehouseCarrierPolicies, error) {
-	stored, err := s.store.ListCarrierPolicies(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return mergeCarrierPolicies(stored), nil
-}
-
-func (s *Service) UpdateCarrierPolicies(ctx context.Context, warehouseKey string, policies []model.CarrierPolicy) (model.WarehouseCarrierPolicies, error) {
-	normalized, err := validateCarrierPolicies(warehouseKey, policies)
-	if err != nil {
-		return model.WarehouseCarrierPolicies{}, err
-	}
-	if err := s.store.ReplaceCarrierPolicies(ctx, normalized[0].WarehouseKey, normalized); err != nil {
-		return model.WarehouseCarrierPolicies{}, err
-	}
-	return model.WarehouseCarrierPolicies{WarehouseKey: normalized[0].WarehouseKey, Carriers: normalized}, nil
-}
-
-func defaultCarrierPolicies(warehouseKey string) []model.CarrierPolicy {
-	warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
-	policies := make([]model.CarrierPolicy, 0, len(supportedAutomaticCarrierCodes))
-	for index, code := range supportedAutomaticCarrierCodes {
-		policies = append(policies, model.CarrierPolicy{
-			WarehouseKey: warehouseKey,
-			CarrierCode:  code,
-			Priority:     index + 1,
-			Enabled:      true,
-		})
-	}
-	return policies
-}
-
-func mergeCarrierPolicies(stored []model.CarrierPolicy) []model.WarehouseCarrierPolicies {
-	byWarehouse := make(map[string][]model.CarrierPolicy)
-	for _, policy := range stored {
-		key := strings.ToUpper(strings.TrimSpace(policy.WarehouseKey))
-		byWarehouse[key] = append(byWarehouse[key], policy)
-	}
-	groups := make([]model.WarehouseCarrierPolicies, 0, 4)
-	for _, warehouseKey := range []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"} {
-		policies, err := validateCarrierPolicies(warehouseKey, byWarehouse[warehouseKey])
-		if err != nil {
-			policies = defaultCarrierPolicies(warehouseKey)
-		}
-		groups = append(groups, model.WarehouseCarrierPolicies{WarehouseKey: warehouseKey, Carriers: policies})
-	}
-	return groups
-}
-
-func validateCarrierPolicies(warehouseKey string, policies []model.CarrierPolicy) ([]model.CarrierPolicy, error) {
-	warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
-	if !contains([]string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}, warehouseKey) {
-		return nil, errors.New("unknown OMS warehouse")
-	}
-	if len(policies) != len(supportedAutomaticCarrierCodes) {
-		return nil, fmt.Errorf("exactly %d carrier policies are required", len(supportedAutomaticCarrierCodes))
-	}
-	seenCodes := make(map[string]bool, len(policies))
-	seenPriorities := make(map[int]bool, len(policies))
-	normalized := make([]model.CarrierPolicy, 0, len(policies))
-	for _, policy := range policies {
-		code := strings.ToUpper(strings.TrimSpace(policy.CarrierCode))
-		if !automaticCarrierWhitelist[code] {
-			return nil, fmt.Errorf("unsupported automatic carrier %q", policy.CarrierCode)
-		}
-		if seenCodes[code] {
-			return nil, fmt.Errorf("carrier %s is duplicated", code)
-		}
-		if policy.Priority < 1 || policy.Priority > len(supportedAutomaticCarrierCodes) || seenPriorities[policy.Priority] {
-			return nil, errors.New("carrier priorities must be unique consecutive values")
-		}
-		seenCodes[code] = true
-		seenPriorities[policy.Priority] = true
-		normalized = append(normalized, model.CarrierPolicy{
-			WarehouseKey: warehouseKey,
-			CarrierCode:  code,
-			Priority:     policy.Priority,
-			Enabled:      policy.Enabled,
-		})
-	}
-	sort.Slice(normalized, func(i, j int) bool { return normalized[i].Priority < normalized[j].Priority })
-	return normalized, nil
-}
-
-func (s *Service) carrierPoliciesByWarehouse(ctx context.Context) (map[string][]model.CarrierPolicy, error) {
-	groups, err := s.ListCarrierPolicies(ctx)
+func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU string) (map[string][]model.CarrierPolicy, error) {
+	groups, err := s.inventory.CarrierPolicies(ctx, "temu", warehouseSKU)
 	if err != nil {
 		return nil, err
 	}
 	result := make(map[string][]model.CarrierPolicy, len(groups))
 	for _, group := range groups {
-		result[group.WarehouseKey] = group.Carriers
+		policies := make([]model.CarrierPolicy, 0, len(group.Carriers))
+		for _, policy := range group.Carriers {
+			policies = append(policies, model.CarrierPolicy{
+				WarehouseKey: policy.WarehouseKey, CarrierCode: policy.CarrierCode,
+				Priority: policy.Priority, Enabled: policy.Enabled,
+			})
+		}
+		result[group.WarehouseKey] = policies
 	}
 	return result, nil
 }
 
-func (s *Service) ListSKUWarehouseRules(ctx context.Context, query string, page, pageSize int) ([]model.SKUWarehouseRule, int, error) {
-	return s.store.ListSKUWarehouseRules(ctx, query, page, pageSize)
-}
-
-func (s *Service) UpdateSKUWarehouseRule(ctx context.Context, warehouseSKU string, disabledWarehouseKeys []string) (model.SKUWarehouseRule, error) {
-	warehouseSKU, disabledWarehouseKeys, err := validateSKUWarehouseRule(warehouseSKU, disabledWarehouseKeys)
-	if err != nil {
-		return model.SKUWarehouseRule{}, err
-	}
-	if err := s.store.ReplaceSKUDisabledWarehouses(ctx, warehouseSKU, disabledWarehouseKeys); err != nil {
-		return model.SKUWarehouseRule{}, err
-	}
-	item := model.SKUWarehouseRule{
-		WarehouseSKU: warehouseSKU, DisabledWarehouseKeys: disabledWarehouseKeys,
-		Customized: len(disabledWarehouseKeys) > 0,
-	}
-	if item.Customized {
-		now := time.Now()
-		item.UpdatedAt = &now
-	}
-	return item, nil
-}
-
-func validateSKUWarehouseRule(warehouseSKU string, disabledWarehouseKeys []string) (string, []string, error) {
-	warehouseSKU = strings.TrimSpace(warehouseSKU)
-	if warehouseSKU == "" {
-		return "", nil, errors.New("warehouse_sku is required")
-	}
-	if len(warehouseSKU) > 255 {
-		return "", nil, errors.New("warehouse_sku is too long")
-	}
-	seen := make(map[string]bool, len(disabledWarehouseKeys))
-	for _, warehouseKey := range disabledWarehouseKeys {
-		warehouseKey = strings.ToUpper(strings.TrimSpace(warehouseKey))
-		if !contains(supportedOMSWarehouseKeys, warehouseKey) {
-			return "", nil, fmt.Errorf("unknown OMS warehouse %q", warehouseKey)
-		}
-		seen[warehouseKey] = true
-	}
-	normalized := make([]string, 0, len(seen))
-	for _, warehouseKey := range supportedOMSWarehouseKeys {
-		if seen[warehouseKey] {
-			normalized = append(normalized, warehouseKey)
-		}
-	}
-	return warehouseSKU, normalized, nil
-}
-
-func (s *Service) applyShopSKUWarehouseRules(ctx context.Context, decision *inventory.DecisionResponse) error {
-	warehouseSKUs := make([]string, 0, len(decision.Records))
-	for _, record := range decision.Records {
-		warehouseSKUs = append(warehouseSKUs, record.SKU)
-	}
-	disabled, err := s.store.DisabledWarehouseKeysForSKUs(ctx, warehouseSKUs)
-	if err != nil {
-		return err
-	}
-	applySKUWarehouseRestrictions(decision, disabled)
-	return nil
-}
-
-func applySKUWarehouseRestrictions(decision *inventory.DecisionResponse, disabled map[string]map[string]bool) {
-	for recordIndex := range decision.Records {
-		record := &decision.Records[recordIndex]
-		restrictions := disabled[strings.TrimSpace(record.SKU)]
-		if len(restrictions) == 0 {
-			continue
-		}
-		for regionIndex := range record.Regions {
-			region := &record.Regions[regionIndex]
-			recommendedSelectable := false
-			for warehouseIndex := range region.Warehouses {
-				warehouse := &region.Warehouses[warehouseIndex]
-				warehouseKey := strings.ToUpper(strings.TrimSpace(warehouse.Key))
-				if restrictions[warehouseKey] {
-					warehouse.Selectable = false
-					warehouse.Recommended = false
-					warehouse.ShopSKUDisabled = true
-					warehouse.ReasonCode = "SHOP_SKU_WAREHOUSE_DISABLED"
-					warehouse.Reason = fmt.Sprintf("当前店铺已禁止 SKU %s 使用此仓库", record.SKU)
-				}
-				if warehouseKey == strings.ToUpper(region.RecommendedWarehouseKey) && warehouse.Selectable {
-					recommendedSelectable = true
-				}
-			}
-			if recommendedSelectable {
-				continue
-			}
-			region.RecommendedWarehouseKey = ""
-			for warehouseIndex := range region.Warehouses {
-				region.Warehouses[warehouseIndex].Recommended = false
-			}
-			for warehouseIndex := range region.Warehouses {
-				if region.Warehouses[warehouseIndex].Selectable {
-					region.Warehouses[warehouseIndex].Recommended = true
-					region.RecommendedWarehouseKey = region.Warehouses[warehouseIndex].Key
-					break
-				}
-			}
-			if region.RecommendedWarehouseKey == "" {
-				region.DecisionCode = "SHOP_SKU_WAREHOUSE_DISABLED"
-				region.Reason = "当前店铺的 SKU 发货仓库规则未保留可选仓库"
-			}
-		}
-	}
-}
-
-func decisionHasShopSKUWarehouseRestrictions(decision inventory.DecisionResponse) bool {
+func decisionHasPlatformSKUWarehouseRestrictions(decision inventory.DecisionResponse) bool {
 	for _, record := range decision.Records {
 		for _, region := range record.Regions {
 			for _, warehouse := range region.Warehouses {
-				if warehouse.ShopSKUDisabled {
+				if warehouse.PlatformSKUDisabled {
 					return true
 				}
 			}
@@ -909,7 +699,7 @@ func (s *Service) validateOrderWarehouseAllowed(ctx context.Context, order model
 	for _, line := range order.Lines {
 		warehouseSKUs = append(warehouseSKUs, line.ExtCode)
 	}
-	disabled, err := s.store.DisabledWarehouseKeysForSKUs(ctx, warehouseSKUs)
+	disabled, err := s.inventory.DisabledWarehouseKeys(ctx, "temu", warehouseSKUs)
 	if err != nil {
 		return err
 	}
@@ -921,7 +711,7 @@ func validateOrderWarehouseRestrictions(order model.Order, warehouseKey string, 
 	for _, line := range order.Lines {
 		warehouseSKU := strings.TrimSpace(line.ExtCode)
 		if disabled[warehouseSKU][warehouseKey] {
-			return fmt.Errorf("当前店铺已禁止 SKU %s 从仓库 %s 购买面单，请重新选择仓库", warehouseSKU, warehouseKey)
+			return fmt.Errorf("Temu 平台已禁止 SKU %s 从仓库 %s 购买面单，请重新选择仓库", warehouseSKU, warehouseKey)
 		}
 	}
 	return nil
@@ -966,7 +756,7 @@ const (
 	manualReasonInventoryRule      = "inventory_rule"
 	manualReasonWarehouseSKUSpec   = "warehouse_sku_spec_incomplete"
 	manualReasonDeliveryAddress    = "delivery_address_unsupported"
-	manualReasonSKUWarehousePolicy = "shop_sku_warehouse_restriction"
+	manualReasonSKUWarehousePolicy = "platform_sku_warehouse_restriction"
 )
 
 func (s *Service) PreviewWarehouses(ctx context.Context, parent string) (WarehousePreview, error) {
@@ -1018,11 +808,6 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 		quantities[line.ExtCode] += line.Quantity
 	}
 	decision, queryErr := s.queryInventory(ctx, quantities)
-	if queryErr == nil {
-		if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
-			return WarehousePreview{}, err
-		}
-	}
 	preview := WarehousePreview{
 		ParentOrderSN: order.ParentOrderSN, Quantities: quantities, Decision: decision,
 		ManualReasons: make([]string, 0), ManualCategories: make([]string, 0), Regions: make([]WarehouseRegionPreview, 0, 4),
@@ -1160,9 +945,6 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
-		return QuoteResult{}, err
-	}
 	s.logger.Info("Shipping quote inventory query completed", "parent_order_sn", order.ParentOrderSN, "duration", time.Since(inventoryStarted).String())
 	packageSpec, err := packageSpecFromResolution(decision.PackageResolution)
 	if err != nil {
@@ -1205,7 +987,12 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	if len(jobs) == 0 {
 		return QuoteResult{}, fmt.Errorf("no eligible warehouse can be quoted: %w", errors.Join(problems...))
 	}
-	warehousePolicies, err := s.carrierPoliciesByWarehouse(ctx)
+	warehouseSKU := ""
+	for sku := range quantities {
+		warehouseSKU = sku
+		break
+	}
+	warehousePolicies, err := s.carrierPoliciesByWarehouse(ctx, warehouseSKU)
 	if err != nil {
 		return QuoteResult{}, err
 	}
@@ -1422,7 +1209,7 @@ func filterChannelsByCarrierPolicy(channels []temu.ShippingChannel, warehouseKey
 	for _, channel := range channels {
 		policy, configured := byCode[carrierCode(channel)]
 		if configured && !policy.Enabled {
-			channel.UnavailableReason = fmt.Sprintf("%s 店铺策略已在 %s 仓库禁用", policy.CarrierCode, warehouseKey)
+			channel.UnavailableReason = fmt.Sprintf("Temu 发货策略已在 %s 仓库禁用 %s", warehouseKey, policy.CarrierCode)
 			rejected = append(rejected, channel)
 			continue
 		}

@@ -287,7 +287,7 @@ func (s *Service) splitWarehouseOptions(ctx context.Context, order model.Order, 
 			skus = append(skus, sku)
 		}
 	}
-	disabled, err := s.store.DisabledWarehouseKeysForSKUs(ctx, skus)
+	disabled, err := s.inventory.DisabledWarehouseKeys(ctx, "temu", skus)
 	if err != nil {
 		return nil, "", err
 	}

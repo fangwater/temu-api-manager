@@ -175,19 +175,6 @@ type CarrierPolicy struct {
 	Enabled      bool   `json:"enabled"`
 }
 
-type WarehouseCarrierPolicies struct {
-	WarehouseKey string          `json:"warehouse_key"`
-	Carriers     []CarrierPolicy `json:"carriers"`
-}
-
-type SKUWarehouseRule struct {
-	WarehouseSKU          string     `json:"warehouse_sku"`
-	ProductName           string     `json:"product_name,omitempty"`
-	DisabledWarehouseKeys []string   `json:"disabled_warehouse_keys"`
-	Customized            bool       `json:"customized"`
-	UpdatedAt             *time.Time `json:"updated_at,omitempty"`
-}
-
 type ShipmentPOGroup struct {
 	WarehouseKey string   `json:"warehouse_key"`
 	PONumbers    []string `json:"po_numbers"`

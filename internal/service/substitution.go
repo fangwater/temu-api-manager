@@ -162,7 +162,7 @@ func (s *Service) CompareSubstitutionPrices(ctx context.Context, parent string) 
 		return SubstitutionPriceComparison{}, fmt.Errorf("SKU %s 没有启用的替代发货组合", originalSKU)
 	}
 	replacementQuantities := expandSubstitutionQuantities(combination, originalQuantity)
-	policies, err := s.carrierPoliciesByWarehouse(ctx)
+	policies, err := s.carrierPoliciesByWarehouse(ctx, originalSKU)
 	if err != nil {
 		return SubstitutionPriceComparison{}, err
 	}
@@ -291,9 +291,6 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	if err != nil {
 		return QuoteResult{}, fmt.Errorf("替代组合库存校验失败: %w", err)
 	}
-	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
-		return QuoteResult{}, err
-	}
 	selection, err := selectWarehouseForPriceComparison(decision, replacementQuantities, request.WarehouseKey)
 	if err != nil {
 		return QuoteResult{}, err
@@ -318,7 +315,7 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 		return QuoteResult{}, err
 	}
 	allowed, rejected := filterAutomaticChannels(channels.Available)
-	policies, err := s.carrierPoliciesByWarehouse(ctx)
+	policies, err := s.carrierPoliciesByWarehouse(ctx, platformSKU)
 	if err != nil {
 		return QuoteResult{}, err
 	}
@@ -417,9 +414,6 @@ func (s *Service) validateStoredSubstitutionQuote(ctx context.Context, order mod
 	decision, err := s.queryInventory(ctx, quantities)
 	if err != nil {
 		return fmt.Errorf("购单前替代库存复核失败: %w", err)
-	}
-	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
-		return err
 	}
 	if _, err := selectWarehouseForPriceComparison(decision, quantities, quote.OMSWarehouseKey); err != nil {
 		return err
@@ -539,10 +533,6 @@ func (s *Service) compareDirectOption(ctx context.Context, order model.Order, qu
 		option.Reason = err.Error()
 		return option
 	}
-	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
-		option.Reason = err.Error()
-		return option
-	}
 	packageSpec, err := packageSpecFromResolution(decision.PackageResolution)
 	if err != nil {
 		option.Reason = err.Error()
@@ -560,10 +550,6 @@ func (s *Service) compareReplacementOption(ctx context.Context, order model.Orde
 	}
 	decision, err := s.queryInventory(ctx, quantities)
 	if err != nil {
-		option.Reason = err.Error()
-		return option
-	}
-	if err := s.applyShopSKUWarehouseRules(ctx, &decision); err != nil {
 		option.Reason = err.Error()
 		return option
 	}

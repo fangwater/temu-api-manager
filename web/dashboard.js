@@ -23,12 +23,9 @@ state.warehouseAssignment = null;
 state.warehouseAssignmentCarrier = "_AUTO_MATCH_";
 state.warehouseAssignmentRequestSequence = 0;
 state.warehouseAssignmentSubmitting = false;
-state.carrierPolicies = [];
-state.skuWarehouseRules = [];
-state.skuRuleMeta = {};
 state.inventoryThresholds = [];
 state.inventoryThresholdMeta = {};
-state.shopInventoryThresholds = null;
+state.platformInventoryThresholds = null;
 state.manualRequestSequence = 0;
 state.combinedShipmentGroups = [];
 state.combinedShipmentMeta = { total_groups: 0, total_orders: 0, queried_at: null, error: "" };
@@ -910,13 +907,11 @@ async function loadWarehouses(sync = false) {
   const path = sync ? "/warehouses/sync" : "/warehouses";
   const options = sync ? { method: "POST" } : {};
   try {
-    const [warehouseResponse, policyResponse] = await Promise.all([api(path, options), api("/carrier-policies")]);
+    const warehouseResponse = await api(path, options);
     const data = warehouseResponse.data || {};
     state.warehouses = data.warehouses || [];
     state.mappings = data.mappings || [];
-    state.carrierPolicies = policyResponse.data || [];
     renderWarehouses();
-    renderCarrierPolicies();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -951,150 +946,9 @@ function renderWarehouses() {
   $$('[data-save-mapping]').forEach((button) => button.addEventListener("click", () => saveMapping(button.dataset.saveMapping)));
 }
 
-function carrierPolicyGroup(warehouseKey) {
-  return state.carrierPolicies.find((group) => group.warehouse_key === warehouseKey);
-}
-
-function renderCarrierPolicies() {
-  const container = $("#carrier-policy-grid");
-  $("#carrier-policy-shop").textContent = state.store.name || state.store.code;
-  container.innerHTML = omsWarehouses.map((warehouse) => {
-    const group = carrierPolicyGroup(warehouse.key) || { warehouse_key: warehouse.key, carriers: [] };
-    const carriers = [...(group.carriers || [])].sort((left, right) => left.priority - right.priority);
-    const enabledCount = carriers.filter((carrier) => carrier.enabled).length;
-    return `<section class="carrier-policy-card">
-      <header><div><small>${escapeHtml(warehouse.region)}</small><strong>${escapeHtml(warehouse.name)}</strong></div><span>${enabledCount} / ${carriers.length} 启用</span><button class="secondary-button carrier-policy-save" data-save-carriers="${escapeHtml(warehouse.key)}"><svg><use href="#i-check"/></svg>保存</button></header>
-      <div class="carrier-policy-list">${carriers.map((carrier, index) => `<div class="carrier-policy-item ${carrier.enabled ? "" : "disabled"}">
-        <b>${index + 1}</b><div><strong>${escapeHtml(carrier.carrier_code)}</strong><small>${carrier.enabled ? `第 ${index + 1} 优先` : "已禁用"}</small></div>
-        <div class="carrier-policy-order"><button class="icon-button" data-policy-move="up" data-policy-warehouse="${escapeHtml(warehouse.key)}" data-policy-carrier="${escapeHtml(carrier.carrier_code)}" ${index === 0 ? "disabled" : ""} title="上移 ${escapeHtml(carrier.carrier_code)}" aria-label="上移 ${escapeHtml(carrier.carrier_code)}"><svg><use href="#i-arrow-up"/></svg></button><button class="icon-button" data-policy-move="down" data-policy-warehouse="${escapeHtml(warehouse.key)}" data-policy-carrier="${escapeHtml(carrier.carrier_code)}" ${index === carriers.length - 1 ? "disabled" : ""} title="下移 ${escapeHtml(carrier.carrier_code)}" aria-label="下移 ${escapeHtml(carrier.carrier_code)}"><svg><use href="#i-arrow-down"/></svg></button></div>
-        <label class="policy-switch" title="${carrier.enabled ? `禁用 ${escapeHtml(carrier.carrier_code)}` : `启用 ${escapeHtml(carrier.carrier_code)}`}"><input type="checkbox" data-policy-enabled="${escapeHtml(carrier.carrier_code)}" data-policy-warehouse="${escapeHtml(warehouse.key)}" ${carrier.enabled ? "checked" : ""} aria-label="${carrier.enabled ? `允许 ${escapeHtml(carrier.carrier_code)}` : `禁用 ${escapeHtml(carrier.carrier_code)}`}"><span></span></label>
-      </div>`).join("")}</div>
-    </section>`;
-  }).join("");
-  $$("[data-policy-move]").forEach((button) => button.addEventListener("click", () => moveCarrierPolicy(button.dataset.policyWarehouse, button.dataset.policyCarrier, button.dataset.policyMove)));
-  $$("[data-policy-enabled]").forEach((input) => input.addEventListener("change", () => setCarrierEnabled(input.dataset.policyWarehouse, input.dataset.policyEnabled, input.checked)));
-  $$("[data-save-carriers]").forEach((button) => button.addEventListener("click", () => saveCarrierPolicies(button.dataset.saveCarriers, button)));
-}
-
-function moveCarrierPolicy(warehouseKey, carrierCode, direction) {
-  const group = carrierPolicyGroup(warehouseKey);
-  if (!group) return;
-  const carriers = group.carriers.sort((left, right) => left.priority - right.priority);
-  const index = carriers.findIndex((carrier) => carrier.carrier_code === carrierCode);
-  const target = direction === "up" ? index - 1 : index + 1;
-  if (index < 0 || target < 0 || target >= carriers.length) return;
-  [carriers[index], carriers[target]] = [carriers[target], carriers[index]];
-  carriers.forEach((carrier, priority) => { carrier.priority = priority + 1; });
-  renderCarrierPolicies();
-}
-
-function setCarrierEnabled(warehouseKey, carrierCode, enabled) {
-  const carrier = carrierPolicyGroup(warehouseKey)?.carriers.find((item) => item.carrier_code === carrierCode);
-  if (!carrier) return;
-  carrier.enabled = enabled;
-  renderCarrierPolicies();
-}
-
-async function saveCarrierPolicies(warehouseKey, button) {
-  const group = carrierPolicyGroup(warehouseKey);
-  if (!group) return toast("快递策略尚未加载", true);
-  setLoading(button, true);
-  try {
-    const { data } = await api(`/carrier-policies/${encodeURIComponent(warehouseKey)}`, {
-      method: "PUT",
-      body: JSON.stringify({ carriers: group.carriers }),
-    });
-    const index = state.carrierPolicies.findIndex((item) => item.warehouse_key === warehouseKey);
-    if (index >= 0) state.carrierPolicies[index] = data;
-    else state.carrierPolicies.push(data);
-    toast(`${warehouseKey} 快递策略已保存`);
-    renderCarrierPolicies();
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    setLoading(button, false);
-  }
-}
-
-async function loadSKUWarehouseRules() {
-  const query = $("#sku-rule-search").value.trim();
-  const params = new URLSearchParams({ page: state.pages.skuRules, page_size: state.pageSize });
-  if (query) params.set("q", query);
-  try {
-    const response = await api(`/sku-warehouse-rules?${params}`);
-    state.skuWarehouseRules = response.data || [];
-    state.skuRuleMeta = response.meta || {};
-    if (adjustEmptyPage(state.skuRuleMeta, "skuRules", loadSKUWarehouseRules)) return;
-    renderSKUWarehouseRules();
-  } catch (error) {
-    toast(error.message, true);
-  }
-}
-
-function renderSKUWarehouseRules() {
-  const configurableWarehouses = omsWarehouses;
-  const rows = $("#sku-rule-rows");
-  rows.innerHTML = state.skuWarehouseRules.map((rule) => {
-    const disabled = new Set(rule.disabled_warehouse_keys || []);
-    const disabledCount = disabled.size;
-    return `<tr class="${rule.dirty ? "dirty" : ""}" data-sku-rule-row="${escapeHtml(rule.warehouse_sku)}">
-      <td><div class="sku-rule-identity"><code>${escapeHtml(rule.warehouse_sku)}</code><span>${escapeHtml(rule.product_name || "未记录商品名称")}</span></div></td>
-      ${configurableWarehouses.map((warehouse) => {
-        const allowed = !disabled.has(warehouse.key);
-        return `<td><label class="warehouse-permission" title="${allowed ? "禁止" : "允许"} ${escapeHtml(rule.warehouse_sku)} 使用 ${escapeHtml(warehouse.name)}"><span>${allowed ? "允许" : "禁用"}</span><span class="policy-switch"><input type="checkbox" data-rule-sku="${escapeHtml(rule.warehouse_sku)}" data-rule-warehouse="${escapeHtml(warehouse.key)}" ${allowed ? "checked" : ""} aria-label="允许 ${escapeHtml(rule.warehouse_sku)} 使用 ${escapeHtml(warehouse.name)}"><span></span></span></label></td>`;
-      }).join("")}
-      <td><span class="status-badge ${disabledCount ? "pending" : "neutral"}" data-rule-status>${disabledCount ? `已禁用 ${disabledCount} 仓` : "默认全仓"}</span></td>
-      <td><button class="secondary-button sku-rule-save" data-save-sku-rule="${escapeHtml(rule.warehouse_sku)}" ${rule.dirty ? "" : "disabled"}><svg><use href="#i-check"/></svg>保存</button></td>
-    </tr>`;
-  }).join("");
-  const total = Number(state.skuRuleMeta.total || 0);
-  const customized = state.skuWarehouseRules.filter((rule) => (rule.disabled_warehouse_keys || []).length > 0).length;
-  $("#metric-sku-shop").textContent = state.store.name || state.store.code;
-  $("#metric-sku-total").textContent = total;
-  $("#metric-sku-customized").textContent = customized;
-  $("#metric-sku-warehouses").textContent = configurableWarehouses.length;
-  $("#sku-rule-total").textContent = `共 ${total} 个 SKU`;
-  $("#sku-rule-empty").hidden = state.skuWarehouseRules.length > 0;
-  renderPager("#sku-rule-pager", state.skuRuleMeta, "skuRules", loadSKUWarehouseRules);
-  $$('[data-rule-sku]').forEach((input) => input.addEventListener("change", () => setSKUWarehouseAllowed(input.dataset.ruleSku, input.dataset.ruleWarehouse, input.checked)));
-  $$('[data-save-sku-rule]').forEach((button) => button.addEventListener("click", () => saveSKUWarehouseRule(button.dataset.saveSkuRule, button)));
-}
-
-function setSKUWarehouseAllowed(warehouseSKU, warehouseKey, allowed) {
-  const rule = state.skuWarehouseRules.find((item) => item.warehouse_sku === warehouseSKU);
-  if (!rule) return;
-  const disabled = new Set(rule.disabled_warehouse_keys || []);
-  if (allowed) disabled.delete(warehouseKey);
-  else disabled.add(warehouseKey);
-  rule.disabled_warehouse_keys = omsWarehouses.map((warehouse) => warehouse.key).filter((key) => disabled.has(key));
-  rule.customized = rule.disabled_warehouse_keys.length > 0;
-  rule.dirty = true;
-  renderSKUWarehouseRules();
-}
-
-async function saveSKUWarehouseRule(warehouseSKU, button) {
-  const rule = state.skuWarehouseRules.find((item) => item.warehouse_sku === warehouseSKU);
-  if (!rule) return;
-  setLoading(button, true);
-  try {
-    const { data } = await api("/sku-warehouse-rules", {
-      method: "PUT",
-      body: JSON.stringify({ warehouse_sku: warehouseSKU, disabled_warehouse_keys: rule.disabled_warehouse_keys || [] }),
-    });
-    Object.assign(rule, data, { product_name: rule.product_name, dirty: false });
-    toast(rule.customized ? `${warehouseSKU} 发货仓库限制已保存` : `${warehouseSKU} 已恢复默认全仓`);
-    renderSKUWarehouseRules();
-  } catch (error) {
-    toast(error.message, true);
-    setLoading(button, false);
-  }
-}
-
 function inventoryThresholdSource(item) {
-  if (item.source === "shop_sku" || item.customized) return "店铺 SKU 单独设置";
-  if (item.source === "shop_default") return "店铺默认";
-  if (item.source === "legacy_sku") return "历史 SKU 覆盖";
-  return "店铺默认";
+  if (item.source === "platform_sku" || item.customized) return "Temu SKU 单独设置";
+  return "Temu 平台默认";
 }
 
 async function loadInventoryThresholds() {
@@ -1105,7 +959,7 @@ async function loadInventoryThresholds() {
     const response = await api(`/inventory-thresholds?${params}`);
     state.inventoryThresholds = response.data || [];
     state.inventoryThresholdMeta = response.meta || {};
-    state.shopInventoryThresholds = response.meta?.default_thresholds || state.shopInventoryThresholds;
+    state.platformInventoryThresholds = response.meta?.default_thresholds || state.platformInventoryThresholds;
     if (adjustEmptyPage(state.inventoryThresholdMeta, "inventoryThresholds", loadInventoryThresholds)) return;
     renderInventoryThresholds();
   } catch (error) {
@@ -1114,17 +968,15 @@ async function loadInventoryThresholds() {
 }
 
 function renderInventoryThresholds() {
-  const defaults = state.shopInventoryThresholds || {};
-  $("#shop-east-threshold").value = defaults.east_threshold ?? "";
-  $("#shop-west-threshold").value = defaults.west_threshold ?? "";
-  $("#shop-total-threshold").value = defaults.total_threshold ?? "";
-  $("#shop-threshold-scope").textContent = `${state.store.name || state.store.code} 未单独设置 SKU 时使用`;
-  $("#reset-shop-thresholds").hidden = !defaults.customized;
+  const defaults = state.platformInventoryThresholds || {};
+  $("#platform-total-threshold").value = defaults.total_threshold ?? "";
+  $("#platform-threshold-scope").textContent = "Temu 全部店铺共用";
   $("#inventory-threshold-rows").innerHTML = state.inventoryThresholds.map((item) => `
     <tr data-threshold-sku="${escapeHtml(item.warehouse_sku)}">
       <td><div class="sku-rule-identity"><code>${escapeHtml(item.warehouse_sku)}</code><span>${escapeHtml(item.product_name || "未记录商品名称")}</span></div></td>
-      <td><input class="threshold-input" data-threshold-field="east_threshold" type="number" min="0" step="1" value="${escapeHtml(item.east_threshold)}"></td>
-      <td><input class="threshold-input" data-threshold-field="west_threshold" type="number" min="0" step="1" value="${escapeHtml(item.west_threshold)}"></td>
+      <td>${escapeHtml(item.east_available)}</td>
+      <td>${escapeHtml(item.west_available)}</td>
+      <td>${escapeHtml(item.total_available)}</td>
       <td><input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="${escapeHtml(item.total_threshold)}"></td>
       <td><span class="status-badge ${item.customized ? "pending" : "neutral"}">${escapeHtml(inventoryThresholdSource(item))}</span></td>
       <td>
@@ -1145,35 +997,21 @@ function renderInventoryThresholds() {
 
 function thresholdPayloadFromForm(form) {
   return {
-    east_threshold: Number(form.querySelector("#shop-east-threshold, [data-threshold-field='east_threshold']") ? (form.id === "shop-threshold-form" ? $("#shop-east-threshold").value : form.querySelector("[data-threshold-field='east_threshold']").value) : 0),
-    west_threshold: Number(form.id === "shop-threshold-form" ? $("#shop-west-threshold").value : form.querySelector("[data-threshold-field='west_threshold']").value),
-    total_threshold: Number(form.id === "shop-threshold-form" ? $("#shop-total-threshold").value : form.querySelector("[data-threshold-field='total_threshold']").value),
+    east_threshold: 0,
+    west_threshold: 0,
+    total_threshold: Number(form.id === "platform-threshold-form" ? $("#platform-total-threshold").value : form.querySelector("[data-threshold-field='total_threshold']").value),
   };
 }
 
-async function saveShopInventoryThresholds(event) {
+async function savePlatformInventoryThresholds(event) {
   event.preventDefault();
   const button = event.submitter;
   setLoading(button, true);
   try {
     const { data } = await api("/inventory-thresholds/defaults", { method: "PATCH", body: JSON.stringify(thresholdPayloadFromForm(event.currentTarget)) });
-    state.shopInventoryThresholds = data;
-    toast("当前店铺默认安全线已保存");
+    state.platformInventoryThresholds = data;
+    toast("Temu 平台默认安全线已保存");
     renderInventoryThresholds();
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    setLoading(button, false);
-  }
-}
-
-async function resetShopInventoryThresholds(button) {
-  setLoading(button, true);
-  try {
-    const { data } = await api("/inventory-thresholds/defaults/reset", { method: "POST" });
-    state.shopInventoryThresholds = data;
-    toast("当前店铺已恢复仓库默认安全线");
-    await loadInventoryThresholds();
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -1205,7 +1043,7 @@ async function resetSKUInventoryThreshold(warehouseSKU, button) {
   setLoading(button, true);
   try {
     await api(`/inventory-thresholds/${encodeURIComponent(warehouseSKU)}/reset`, { method: "POST" });
-    toast(`${warehouseSKU} 已恢复店铺默认安全线`);
+    toast(`${warehouseSKU} 已恢复 Temu 平台默认安全线`);
     await loadInventoryThresholds();
   } catch (error) {
     toast(error.message, true);
@@ -2301,7 +2139,6 @@ function switchView(view) {
   if (view === "oms-statuses") loadOMSPlatformOrders();
   if (view === "shipments") loadHistory();
   if (view === "warehouses") loadWarehouses();
-  if (view === "sku-warehouses") loadSKUWarehouseRules();
   if (view === "inventory-thresholds") loadInventoryThresholds();
   if (view === "tracking-statuses") renderTrackingStatusMappings($("#tracking-status-search").value);
 }
@@ -2391,12 +2228,9 @@ $("#export-ledger-po").addEventListener("click", exportShipmentPO);
 $("#refresh-shipments").addEventListener("click", loadHistory);
 $("#sync-warehouses").addEventListener("click", async () => { const button = $("#sync-warehouses"); setLoading(button, true); await loadWarehouses(true); setLoading(button, false); });
 $("#order-search").addEventListener("input", () => { state.pages.orders = 1; clearTimeout(state.searchTimer); state.searchTimer = setTimeout(loadOrders, 250); });
-$("#refresh-sku-rules").addEventListener("click", loadSKUWarehouseRules);
-$("#sku-rule-search").addEventListener("input", () => { state.pages.skuRules = 1; clearTimeout(state.skuRuleSearchTimer); state.skuRuleSearchTimer = setTimeout(loadSKUWarehouseRules, 250); });
 $("#refresh-inventory-thresholds").addEventListener("click", loadInventoryThresholds);
 $("#inventory-threshold-search").addEventListener("input", () => { state.pages.inventoryThresholds = 1; clearTimeout(state.inventoryThresholdSearchTimer); state.inventoryThresholdSearchTimer = setTimeout(loadInventoryThresholds, 250); });
-$("#shop-threshold-form").addEventListener("submit", saveShopInventoryThresholds);
-$("#reset-shop-thresholds").addEventListener("click", (event) => resetShopInventoryThresholds(event.currentTarget));
+$("#platform-threshold-form").addEventListener("submit", savePlatformInventoryThresholds);
 $("#tracking-status-search").addEventListener("input", (event) => renderTrackingStatusMappings(event.target.value));
 $("#key-form").addEventListener("submit", (event) => { event.preventDefault(); state.operationKey = $("#operation-key").value; sessionStorage.setItem(operationKeyStorage(), state.operationKey); $("#key-dialog").close(); state.keyResolver?.(state.operationKey); state.keyResolver = null; });
 $("#key-cancel").addEventListener("click", () => { $("#key-dialog").close(); state.keyResolver?.(""); state.keyResolver = null; });
