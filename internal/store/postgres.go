@@ -442,7 +442,7 @@ ORDER BY w.warehouse_name
 	}
 	mrows, err := p.pool.Query(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.enabled,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.enabled,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$1 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -457,7 +457,7 @@ ORDER BY m.oms_warehouse_key
 	mappings := []model.WarehouseMapping{}
 	for mrows.Next() {
 		var m model.WarehouseMapping
-		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.OMSAccount, &m.Enabled, &m.UpdatedAt); err != nil {
+		if err := mrows.Scan(&m.OMSKey, &m.TemuWarehouseID, &m.TemuName, &m.OMSWarehouseCode, &m.Enabled, &m.UpdatedAt); err != nil {
 			return nil, nil, err
 		}
 		mappings = append(mappings, m)
@@ -465,7 +465,7 @@ ORDER BY m.oms_warehouse_key
 	return warehouses, mappings, mrows.Err()
 }
 
-func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string, enabled bool) (model.WarehouseMapping, error) {
+func (p *Postgres) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode string, enabled bool) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
 	temuID = strings.TrimSpace(temuID)
 	logicalKey := omsKey
@@ -477,16 +477,15 @@ LIMIT 1
 `, temuID, p.shopCode).Scan(&logicalKey)
 	_, err := p.pool.Exec(ctx, `
 INSERT INTO public.temu_warehouse_mappings(
-oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,oms_account,logical_warehouse_key,enabled
-) VALUES($1,$2,$3,$4,$5,$6)
+oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,logical_warehouse_key,enabled
+) VALUES($1,$2,$3,$4,$5)
 ON CONFLICT(oms_warehouse_key) DO UPDATE SET
 temu_warehouse_id=EXCLUDED.temu_warehouse_id,
 oms_warehouse_code=EXCLUDED.oms_warehouse_code,
-oms_account=EXCLUDED.oms_account,
 logical_warehouse_key=EXCLUDED.logical_warehouse_key,
 enabled=EXCLUDED.enabled,
 updated_at=now()
-`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), strings.ToLower(strings.TrimSpace(omsAccount)), logicalKey, enabled)
+`, omsKey, temuID, strings.TrimSpace(omsWarehouseCode), logicalKey, enabled)
 	if err != nil {
 		return model.WarehouseMapping{}, err
 	}
@@ -502,7 +501,7 @@ func (p *Postgres) WarehouseMapping(ctx context.Context, omsKey string) (model.W
 	var m model.WarehouseMapping
 	err := p.pool.QueryRow(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.oms_account,m.enabled,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.enabled,m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -511,7 +510,7 @@ LEFT JOIN public.temu_warehouses canonical ON canonical.warehouse_id=m.temu_ware
 WHERE m.oms_warehouse_key=$1
 	`, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(
 		&m.OMSKey, &m.TemuWarehouseID, &m.TemuName,
-		&m.OMSWarehouseCode, &m.OMSAccount, &m.Enabled, &m.UpdatedAt,
+		&m.OMSWarehouseCode, &m.Enabled, &m.UpdatedAt,
 	)
 	return m, err
 }
@@ -532,13 +531,13 @@ AND m.enabled
 }
 
 func (p *Postgres) SaveQuote(ctx context.Context, quote model.Quote) error {
-	_, err := p.pool.Exec(ctx, `INSERT INTO temu_shipping_quotes(id,parent_order_sn,oms_warehouse_key,temu_warehouse_id,region,selected_channel_id,selected_ship_company_id,selected_company_name,selected_logistics_type,selected_reason,request_payload,response_payload,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, quote.ID, quote.ParentOrderSN, quote.OMSWarehouseKey, quote.TemuWarehouseID, quote.Region, quote.ChannelID, quote.ShipCompanyID, quote.ShippingCompanyName, quote.ShipLogisticsType, quote.SelectionReason, jsonOrEmpty(quote.RequestPayload, "{}"), jsonOrEmpty(quote.ResponsePayload, "{}"), quote.ExpiresAt)
+	_, err := p.pool.Exec(ctx, `INSERT INTO temu_shipping_quotes(id,parent_order_sn,oms_warehouse_key,oms_account,temu_warehouse_id,region,selected_channel_id,selected_ship_company_id,selected_company_name,selected_logistics_type,selected_reason,request_payload,response_payload,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, quote.ID, quote.ParentOrderSN, quote.OMSWarehouseKey, quote.OMSAccount, quote.TemuWarehouseID, quote.Region, quote.ChannelID, quote.ShipCompanyID, quote.ShippingCompanyName, quote.ShipLogisticsType, quote.SelectionReason, jsonOrEmpty(quote.RequestPayload, "{}"), jsonOrEmpty(quote.ResponsePayload, "{}"), quote.ExpiresAt)
 	return err
 }
 
 func (p *Postgres) GetQuote(ctx context.Context, id string) (model.Quote, error) {
 	var q model.Quote
-	err := p.pool.QueryRow(ctx, `SELECT id,parent_order_sn,oms_warehouse_key,temu_warehouse_id,region,selected_channel_id,selected_ship_company_id,selected_company_name,selected_logistics_type,selected_reason,request_payload,response_payload,expires_at,created_at FROM temu_shipping_quotes WHERE id=$1`, id).Scan(&q.ID, &q.ParentOrderSN, &q.OMSWarehouseKey, &q.TemuWarehouseID, &q.Region, &q.ChannelID, &q.ShipCompanyID, &q.ShippingCompanyName, &q.ShipLogisticsType, &q.SelectionReason, &q.RequestPayload, &q.ResponsePayload, &q.ExpiresAt, &q.CreatedAt)
+	err := p.pool.QueryRow(ctx, `SELECT id,parent_order_sn,oms_warehouse_key,oms_account,temu_warehouse_id,region,selected_channel_id,selected_ship_company_id,selected_company_name,selected_logistics_type,selected_reason,request_payload,response_payload,expires_at,created_at FROM temu_shipping_quotes WHERE id=$1`, id).Scan(&q.ID, &q.ParentOrderSN, &q.OMSWarehouseKey, &q.OMSAccount, &q.TemuWarehouseID, &q.Region, &q.ChannelID, &q.ShipCompanyID, &q.ShippingCompanyName, &q.ShipLogisticsType, &q.SelectionReason, &q.RequestPayload, &q.ResponsePayload, &q.ExpiresAt, &q.CreatedAt)
 	return q, err
 }
 
@@ -912,7 +911,7 @@ s.failed_carrier_codes,s.package_sn_list,s.tracking_number,s.request_payload,
 	s.submission_attempts,s.last_submission_at,
 	s.confirmation_attempts,s.last_confirmation_at,
 	s.created_at,s.updated_at,s.confirmed_at,so.parent_order_sn,
-	q.oms_warehouse_key,coalesce(m.oms_warehouse_code,''),
+	q.oms_warehouse_key,coalesce(m.oms_warehouse_code,''),q.oms_account,
 	d.shipment_id,d.oms_warehouse_key,d.warehouse_code,d.status,
 	coalesce(d.outbound_order_nos,'{}'::text[]),coalesce(d.tracking_number,''),
 	coalesce(d.attempts,0),coalesce(d.error_message,''),
@@ -938,7 +937,7 @@ func scanShipment(row pgx.Row) (model.Shipment, error) {
 		&s.WarehouseID, &s.ChannelID, &s.ShipCompanyID, &s.ShippingCompanyName,
 		&s.ShipLogisticsType, &s.FailedCarrierCodes, &s.PackageSNList, &s.TrackingNumber, &s.RequestPayload,
 		&s.ResponsePayload, &s.ErrorCode, &s.ErrorMessage, &s.SubmissionAttempts, &s.LastSubmissionAt, &s.ConfirmationAttempts, &s.LastConfirmationAt, &s.CreatedAt, &s.UpdatedAt,
-		&s.ConfirmedAt, &s.ParentOrderSN, &s.OMSWarehouseKey, &s.OMSWarehouseCode,
+		&s.ConfirmedAt, &s.ParentOrderSN, &s.OMSWarehouseKey, &s.OMSWarehouseCode, &s.OMSAccount,
 		&syncID, &syncKey, &syncCode, &syncStatus, &syncOrders, &syncTracking,
 		&syncAttempts, &syncError, &syncSummary, &syncCreated,
 		&syncUpdated, &syncVerified, &syncTerminalStatus, &syncTerminalNote, &syncTerminalAt,
@@ -1080,9 +1079,7 @@ const (
 	  AND d.status IN ('waiting_sync','manual_required')
 	  AND d.response_summary->>'source'='oms_platform_order'
 	  AND jsonb_typeof(d.response_summary->'expected'->'orders')='array'
-	  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0
-	  AND jsonb_typeof(d.response_summary->'opposite'->'orders')='array'
-	  AND jsonb_array_length(d.response_summary->'opposite'->'orders')=0`
+	  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0`
 	omsPlatformOrderTerminalRecords = `
 	FROM temu_oms_sync_checks d
 	JOIN temu_shipments s ON s.id=d.shipment_id
@@ -1459,8 +1456,6 @@ func (p *Postgres) ResolveMissingOMSPlatformOrder(ctx context.Context, parentOrd
 		  AND d.response_summary->>'source'='oms_platform_order'
 		  AND jsonb_typeof(d.response_summary->'expected'->'orders')='array'
 		  AND jsonb_array_length(d.response_summary->'expected'->'orders')=0
-		  AND jsonb_typeof(d.response_summary->'opposite'->'orders')='array'
-		  AND jsonb_array_length(d.response_summary->'opposite'->'orders')=0
 		RETURNING d.shipment_id
 	`, parentOrderSN, terminalStatus, terminalNote).Scan(&shipmentID)
 	if err != nil {

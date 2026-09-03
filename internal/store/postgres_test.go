@@ -140,14 +140,13 @@ func TestOMSPlatformOrderStatusText(t *testing.T) {
 	}
 }
 
-func TestOMSPlatformOrderMissingRecordsRequireSuccessfulEmptyLookups(t *testing.T) {
+func TestOMSPlatformOrderMissingRecordsRequireSuccessfulEmptyLookup(t *testing.T) {
 	for _, fragment := range []string{
 		"s.status='shipped'",
 		"s.confirmed_at IS NOT NULL",
 		"d.status IN ('waiting_sync','manual_required')",
 		"d.response_summary->>'source'='oms_platform_order'",
 		"jsonb_array_length(d.response_summary->'expected'->'orders')=0",
-		"jsonb_array_length(d.response_summary->'opposite'->'orders')=0",
 		"e.event_type='label_ready'",
 	} {
 		if !strings.Contains(omsPlatformOrderMissingRecords, fragment) {

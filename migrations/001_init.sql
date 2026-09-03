@@ -116,16 +116,13 @@ CREATE TABLE IF NOT EXISTS public.temu_warehouse_mappings (
     temu_warehouse_id text NOT NULL REFERENCES public.temu_warehouses(warehouse_id),
 logical_warehouse_key text NOT NULL DEFAULT '',
     oms_warehouse_code text NOT NULL DEFAULT '',
-    oms_account text NOT NULL,
     enabled boolean NOT NULL DEFAULT true,
-    CONSTRAINT temu_warehouse_mappings_oms_account_check CHECK (oms_account IN ('dps', 'arp')),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 ALTER TABLE public.temu_warehouse_mappings
 ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '',
 ADD COLUMN IF NOT EXISTS logical_warehouse_key text NOT NULL DEFAULT '',
-ADD COLUMN IF NOT EXISTS oms_account text,
 ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
 
 UPDATE public.temu_warehouse_mappings SET
@@ -136,23 +133,9 @@ UPDATE public.temu_warehouse_mappings SET
         ELSE oms_warehouse_code END
 WHERE oms_warehouse_code = '';
 
-UPDATE public.temu_warehouse_mappings
-SET oms_account=lower(trim(oms_account))
-WHERE oms_account IS NOT NULL;
-
-UPDATE public.temu_warehouse_mappings
-SET oms_account=CASE
-    WHEN upper(trim(oms_warehouse_key)) LIKE 'DPS%'
-      OR upper(trim(oms_warehouse_code)) LIKE 'DPS%' THEN 'dps'
-    WHEN upper(trim(oms_warehouse_key)) LIKE 'ARP%' THEN 'arp'
-    ELSE oms_account END
-WHERE coalesce(trim(oms_account),'')='';
-
 ALTER TABLE public.temu_warehouse_mappings
     DROP CONSTRAINT IF EXISTS temu_warehouse_mappings_oms_account_check,
-    ALTER COLUMN oms_account SET NOT NULL,
-    ADD CONSTRAINT temu_warehouse_mappings_oms_account_check
-        CHECK (oms_account IN ('dps', 'arp'));
+    DROP COLUMN IF EXISTS oms_account;
 
 UPDATE public.temu_warehouse_mappings
 SET logical_warehouse_key=oms_warehouse_key
@@ -178,6 +161,7 @@ CREATE TABLE IF NOT EXISTS temu_shipping_quotes (
     id text PRIMARY KEY,
     parent_order_sn text NOT NULL REFERENCES temu_orders(parent_order_sn),
     oms_warehouse_key text NOT NULL,
+	oms_account text NOT NULL DEFAULT '',
     temu_warehouse_id text NOT NULL,
     region text NOT NULL,
     selected_channel_id bigint NOT NULL,
@@ -190,6 +174,9 @@ CREATE TABLE IF NOT EXISTS temu_shipping_quotes (
     expires_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE temu_shipping_quotes
+    ADD COLUMN IF NOT EXISTS oms_account text NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS temu_shipping_quotes_parent_idx
     ON temu_shipping_quotes(parent_order_sn, created_at DESC);

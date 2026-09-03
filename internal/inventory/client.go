@@ -166,17 +166,29 @@ type PackageResolution struct {
 	Package     *PackageSpec            `json:"package,omitempty"`
 }
 
+type FulfillmentAccountDecision struct {
+	Platform       string   `json:"platform"`
+	WarehouseSKUs  []string `json:"warehouse_skus"`
+	AccountKey     string   `json:"account_key,omitempty"`
+	WarehouseCodes []string `json:"warehouse_codes"`
+	Configured     bool     `json:"configured"`
+	RequiresManual bool     `json:"requires_manual"`
+	DecisionCode   string   `json:"decision_code"`
+	Reason         string   `json:"reason"`
+}
+
 type DecisionResponse struct {
-	Complete             bool                `json:"complete"`
-	RuleVersion          string              `json:"rule_version"`
-	SafetyStockThreshold float64             `json:"safety_stock_threshold"`
-	DefaultThresholds    InventoryThresholds `json:"default_thresholds"`
-	InventoryBasis       string              `json:"inventory_basis"`
-	WindowStart          string              `json:"inventory_window_start"`
-	WindowEnd            string              `json:"inventory_window_end"`
-	QueriedAt            time.Time           `json:"queried_at"`
-	Records              []SKUDecision       `json:"records"`
-	PackageResolution    PackageResolution   `json:"package_resolution"`
+	Complete             bool                       `json:"complete"`
+	RuleVersion          string                     `json:"rule_version"`
+	SafetyStockThreshold float64                    `json:"safety_stock_threshold"`
+	DefaultThresholds    InventoryThresholds        `json:"default_thresholds"`
+	InventoryBasis       string                     `json:"inventory_basis"`
+	WindowStart          string                     `json:"inventory_window_start"`
+	WindowEnd            string                     `json:"inventory_window_end"`
+	QueriedAt            time.Time                  `json:"queried_at"`
+	Records              []SKUDecision              `json:"records"`
+	PackageResolution    PackageResolution          `json:"package_resolution"`
+	AccountDecision      FulfillmentAccountDecision `json:"account_decision"`
 }
 
 type envelope struct {

@@ -25,27 +25,23 @@ type omsPlatformOrderDecision struct {
 }
 
 func (s *Service) reconcileOMSPlatformOrder(ctx context.Context, shipment model.Shipment, mapping model.WarehouseMapping) (model.Shipment, error) {
-	expectedAccount, oppositeAccount, ok := omsAccountSelectorsForWarehouse(mapping)
+	expectedAccount, ok := normalizeOMSAccount(shipment.OMSAccount)
 	if !ok {
-		return s.failOMSPlatformOrderQuery(ctx, shipment, mapping, fmt.Errorf("unsupported OMS account ownership for warehouse %s (%s)", mapping.OMSKey, mapping.OMSWarehouseCode))
+		return s.failOMSPlatformOrderQuery(ctx, shipment, mapping, errors.New("shipment has no XLWMS OMS account decision"))
 	}
 	expected, err := s.oms.QueryPlatformOrder(ctx, expectedAccount, shipment.ParentOrderSN)
 	if err != nil {
 		return s.failOMSPlatformOrderQuery(ctx, shipment, mapping, err)
 	}
-	opposite, err := s.oms.QueryPlatformOrder(ctx, oppositeAccount, shipment.ParentOrderSN)
-	if err != nil {
-		return s.failOMSPlatformOrderQuery(ctx, shipment, mapping, err)
-	}
 
-	decision := decideOMSPlatformOrder(expected, opposite, mapping.OMSWarehouseCode, shipment.ConfirmedAt, time.Now())
+	decision := decideOMSPlatformOrder(expected, mapping.OMSWarehouseCode, shipment.ConfirmedAt, time.Now())
 	assignment := omsWarehouseAssignmentAuditFromShipment(shipment)
 	if decision.State == "pending" {
 		var assigned bool
 		assignment, assigned, err = s.assignPendingOMSPlatformOrder(ctx, shipment, mapping, expected, assignment)
 		if err != nil {
 			decision.Message = "领星待处理，仓库物流自动分配失败，等待后台重试：" + err.Error()
-			summary := omsPlatformOrderSummary(mapping, expected, opposite, decision, assignment)
+			summary := omsPlatformOrderSummary(mapping, expected, decision, assignment)
 			if updateErr := s.store.UpdateOMSSync(ctx, shipment.ID, "waiting_sync", nil, shipment.TrackingNumber, summary, decision.Message); updateErr != nil {
 				return shipment, errors.Join(err, updateErr)
 			}
@@ -60,7 +56,7 @@ func (s *Service) reconcileOMSPlatformOrder(ctx context.Context, shipment model.
 			s.logger.Info("OMS pending order warehouse and logistics assigned automatically", "shipment_id", shipment.ID, "oms_account", expectedAccount)
 		}
 	}
-	summary := omsPlatformOrderSummary(mapping, expected, opposite, decision, assignment)
+	summary := omsPlatformOrderSummary(mapping, expected, decision, assignment)
 	switch {
 	case decision.Verified:
 		if err := s.store.UpdateOMSSync(ctx, shipment.ID, "verified", nil, shipment.TrackingNumber, summary, ""); err != nil {
@@ -84,14 +80,8 @@ func (s *Service) reconcileOMSPlatformOrder(ctx context.Context, shipment model.
 	}
 }
 
-func decideOMSPlatformOrder(expected, opposite oms.PlatformOrderLookup, expectedWarehouseCode string, confirmedAt *time.Time, now time.Time) omsPlatformOrderDecision {
+func decideOMSPlatformOrder(expected oms.PlatformOrderLookup, expectedWarehouseCode string, confirmedAt *time.Time, now time.Time) omsPlatformOrderDecision {
 	expectedWarehouseCode = strings.TrimSpace(expectedWarehouseCode)
-	for _, order := range opposite.Orders {
-		if order.Status == 2 || order.Status == 3 {
-			return omsManualDecision("领星跨账户重复履约风险：非买单账户 %s 存在状态 %d（%s）的订单，需人工核对防止撞库", opposite.Account, order.Status, order.StatusText)
-		}
-	}
-
 	switch len(expected.Orders) {
 	case 0:
 		if confirmedAt != nil && !confirmedAt.IsZero() && now.Before(confirmedAt.Add(omsPlatformOrderMissingGracePeriod)) {
@@ -146,34 +136,22 @@ func omsManualDecision(format string, values ...any) omsPlatformOrderDecision {
 	}
 }
 
-func omsAccountSelectorsForWarehouse(mapping model.WarehouseMapping) (string, string, bool) {
-	account, ok := normalizeOMSAccount(mapping.OMSAccount)
-	if !ok {
-		return "", "", false
-	}
-	switch account {
-	case "dps":
-		return "dps", "arp", true
-	case "arp":
-		return "arp", "dps", true
-	default:
-		return "", "", false
-	}
-}
-
 func normalizeOMSAccount(value string) (string, bool) {
 	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "dps", "arp":
-		return value, true
-	default:
+	if value == "" || len(value) > 64 {
 		return "", false
 	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' && char != '_' {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func omsPlatformOrderSummary(
 	mapping model.WarehouseMapping,
-	expected, opposite oms.PlatformOrderLookup,
+	expected oms.PlatformOrderLookup,
 	decision omsPlatformOrderDecision,
 	assignment *omsWarehouseAssignmentAudit,
 ) json.RawMessage {
@@ -198,12 +176,8 @@ func omsPlatformOrderSummary(
 		"source": "oms_platform_order", "decision": decision.State,
 		"expected": map[string]any{
 			"account": expected.Account, "warehouse_key": mapping.OMSKey,
-			"warehouse_code": mapping.OMSWarehouseCode, "configured_account": mapping.OMSAccount, "found": expected.Found,
+			"warehouse_code": mapping.OMSWarehouseCode, "found": expected.Found,
 			"match_count": len(expected.Orders), "orders": summarize(expected),
-		},
-		"opposite": map[string]any{
-			"account": opposite.Account, "found": opposite.Found,
-			"match_count": len(opposite.Orders), "orders": summarize(opposite),
 		},
 	}
 	if assignment != nil {
@@ -235,7 +209,7 @@ func (s *Service) failOMSPlatformOrderQuery(ctx context.Context, shipment model.
 func omsPlatformOrderFailureSummary(shipment model.Shipment, mapping model.WarehouseMapping) json.RawMessage {
 	summary := map[string]any{
 		"source": "oms_platform_order", "warehouse_key": mapping.OMSKey,
-		"warehouse_code": mapping.OMSWarehouseCode, "configured_account": mapping.OMSAccount,
+		"warehouse_code": mapping.OMSWarehouseCode, "oms_account": shipment.OMSAccount,
 	}
 	if assignment := omsWarehouseAssignmentAuditFromShipment(shipment); assignment != nil {
 		summary["warehouse_assignment"] = assignment

@@ -130,7 +130,7 @@ func (s *Service) warehouseAssignmentTarget(ctx context.Context, parentOrderSN s
 	if err != nil {
 		return warehouseAssignmentTarget{}, err
 	}
-	account, ok := normalizeOMSAccount(mapping.OMSAccount)
+	account, ok := normalizeOMSAccount(shipment.OMSAccount)
 	if !ok {
 		return warehouseAssignmentTarget{}, fmt.Errorf("%w：买单仓库没有可用的领星账户", ErrWarehouseAssignmentUnavailable)
 	}
@@ -158,7 +158,7 @@ func (s *Service) assignPendingOMSPlatformOrder(
 	if s.oms == nil {
 		return nil, false, errors.New("warehouse assignment service is not configured")
 	}
-	account, ok := normalizeOMSAccount(mapping.OMSAccount)
+	account, ok := normalizeOMSAccount(shipment.OMSAccount)
 	if !ok {
 		return nil, false, fmt.Errorf("%w：买单仓库没有可用的领星账户", ErrWarehouseAssignmentUnavailable)
 	}

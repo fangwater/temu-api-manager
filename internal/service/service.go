@@ -72,6 +72,18 @@ func (s *Service) queryInventory(ctx context.Context, quantities map[string]int)
 	return s.inventory.QueryForShop(ctx, "temu", s.shopCode, quantities)
 }
 
+func fulfillmentAccountFromDecision(decision inventory.DecisionResponse) (string, error) {
+	account := strings.ToLower(strings.TrimSpace(decision.AccountDecision.AccountKey))
+	if decision.AccountDecision.Configured && !decision.AccountDecision.RequiresManual && account != "" {
+		return account, nil
+	}
+	reason := strings.TrimSpace(decision.AccountDecision.Reason)
+	if reason == "" {
+		reason = "平台 SKU 未配置领星履约账户"
+	}
+	return "", errors.New(reason)
+}
+
 func (s *Service) PlatformInventoryThresholds(ctx context.Context) (inventory.PlatformInventoryThresholds, error) {
 	return s.inventory.PlatformInventoryThresholds(ctx, "temu")
 }
@@ -644,17 +656,13 @@ func (s *Service) SyncWarehouses(ctx context.Context) ([]model.Warehouse, []mode
 func (s *Service) ListWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
 	return s.store.ListWarehouses(ctx)
 }
-func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode, omsAccount string, enabled bool) (model.WarehouseMapping, error) {
+func (s *Service) SetWarehouseMapping(ctx context.Context, omsKey, temuID, omsWarehouseCode string, enabled bool) (model.WarehouseMapping, error) {
 	omsKey = strings.ToUpper(strings.TrimSpace(omsKey))
 	omsWarehouseCode = strings.TrimSpace(omsWarehouseCode)
 	if omsWarehouseCode == "" {
 		return model.WarehouseMapping{}, errors.New("oms_warehouse_code is required")
 	}
-	omsAccount, ok := normalizeOMSAccount(omsAccount)
-	if !ok {
-		return model.WarehouseMapping{}, errors.New("oms_account must be dps or arp")
-	}
-	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode, omsAccount, enabled)
+	return s.store.SetWarehouseMapping(ctx, omsKey, temuID, omsWarehouseCode, enabled)
 }
 func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) error {
 	return s.store.DeleteWarehouseMapping(ctx, omsKey)
@@ -954,6 +962,10 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	if err != nil {
 		return QuoteResult{}, err
 	}
+	omsAccount, err := fulfillmentAccountFromDecision(decision)
+	if err != nil {
+		return QuoteResult{}, fmt.Errorf("领星账户决策要求人工处理: %w", err)
+	}
 	s.logger.Info("Shipping quote inventory query completed", "parent_order_sn", order.ParentOrderSN, "duration", time.Since(inventoryStarted).String())
 	packageSpec, err := packageSpecFromResolution(decision.PackageResolution)
 	if err != nil {
@@ -1093,7 +1105,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		selectedRegion = warehouseRegion(selectedWarehouse.WarehouseKey)
 	}
 	quote := model.Quote{ID: newID("q"), ParentOrderSN: order.ParentOrderSN,
-		OMSWarehouseKey: selectedWarehouse.WarehouseKey, TemuWarehouseID: selectedResult.warehouse.ID,
+		OMSWarehouseKey: selectedWarehouse.WarehouseKey, OMSAccount: omsAccount, TemuWarehouseID: selectedResult.warehouse.ID,
 		Region: selectedRegion, ChannelID: choice.channel.ChannelID, ShipCompanyID: choice.channel.ShipCompanyID,
 		ShippingCompanyName: choice.channel.ShippingCompanyName, ShipLogisticsType: choice.channel.ShipLogisticsType,
 		SelectionReason: reason, RequestPayload: requestRecord, ResponsePayload: responseRecord,

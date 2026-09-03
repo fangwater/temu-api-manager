@@ -291,11 +291,15 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	if err != nil {
 		return QuoteResult{}, fmt.Errorf("替代组合库存校验失败: %w", err)
 	}
+	omsAccount, err := fulfillmentAccountFromDecision(decision)
+	if err != nil {
+		return QuoteResult{}, fmt.Errorf("领星账户决策要求人工处理: %w", err)
+	}
 	selection, err := selectWarehouseForPriceComparison(decision, replacementQuantities, request.WarehouseKey)
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	if err := s.validateSubstitutionPairing(ctx, request.WarehouseKey, combination); err != nil {
+	if err := s.validateSubstitutionPairing(ctx, omsAccount, combination); err != nil {
 		return QuoteResult{}, err
 	}
 	mapped, err := s.store.MappedWarehouse(ctx, request.WarehouseKey)
@@ -362,7 +366,7 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	responseRecord, _ := json.Marshal(map[string]any{"temu_raw": json.RawMessage(raw), "available": allowed, "unavailable": channels.Unavailable})
 	quote := model.Quote{
 		ID: newID("q"), ParentOrderSN: order.ParentOrderSN,
-		OMSWarehouseKey: request.WarehouseKey, TemuWarehouseID: mapped.ID, Region: warehouseRegion(request.WarehouseKey),
+		OMSWarehouseKey: request.WarehouseKey, OMSAccount: omsAccount, TemuWarehouseID: mapped.ID, Region: warehouseRegion(request.WarehouseKey),
 		ChannelID: choice.channel.ChannelID, ShipCompanyID: choice.channel.ShipCompanyID,
 		ShippingCompanyName: choice.channel.ShippingCompanyName, ShipLogisticsType: choice.channel.ShipLogisticsType,
 		SelectionReason: reason, RequestPayload: requestRecord, ResponsePayload: responseRecord,
@@ -419,7 +423,14 @@ func (s *Service) validateStoredSubstitutionQuote(ctx context.Context, order mod
 	if _, err := selectWarehouseForPriceComparison(decision, quantities, quote.OMSWarehouseKey); err != nil {
 		return err
 	}
-	if err := s.validateSubstitutionPairing(ctx, quote.OMSWarehouseKey, combination); err != nil {
+	omsAccount, err := fulfillmentAccountFromDecision(decision)
+	if err != nil {
+		return fmt.Errorf("领星账户决策要求人工处理: %w", err)
+	}
+	if !strings.EqualFold(omsAccount, quote.OMSAccount) {
+		return errors.New("平台 SKU 的领星账户配置已变化，请重新询价")
+	}
+	if err := s.validateSubstitutionPairing(ctx, omsAccount, combination); err != nil {
 		return err
 	}
 	mapped, err := s.store.MappedWarehouse(ctx, quote.OMSWarehouseKey)
@@ -429,21 +440,21 @@ func (s *Service) validateStoredSubstitutionQuote(ctx context.Context, order mod
 	return nil
 }
 
-func (s *Service) validateSubstitutionPairing(ctx context.Context, warehouseKey string, combination inventory.SKUCombination) error {
-	mapping, err := s.store.WarehouseMapping(ctx, warehouseKey)
-	if err != nil || !mapping.Enabled || strings.TrimSpace(mapping.OMSAccount) == "" {
-		return fmt.Errorf("仓库 %s 未配置可用的 OMS 账户", warehouseKey)
+func (s *Service) validateSubstitutionPairing(ctx context.Context, account string, combination inventory.SKUCombination) error {
+	account = strings.TrimSpace(account)
+	if account == "" {
+		return errors.New("平台 SKU 未配置可用的 OMS 账户")
 	}
-	validation, err := s.inventory.ValidateProductPairing(ctx, substitutionOMSPairingRequest(mapping.OMSAccount, combination))
+	validation, err := s.inventory.ValidateProductPairing(ctx, substitutionOMSPairingRequest(account, combination))
 	if err != nil {
-		return fmt.Errorf("仓库 %s 无法校验 OMS 产品配对: %w", warehouseKey, err)
+		return fmt.Errorf("账户 %s 无法校验 OMS 产品配对: %w", account, err)
 	}
 	if !validation.Ready {
 		reason := strings.TrimSpace(validation.Reason)
 		if reason == "" {
 			reason = "OMS 产品配对不可用"
 		}
-		return fmt.Errorf("仓库 %s 禁止组合替代发货: %s", warehouseKey, reason)
+		return fmt.Errorf("账户 %s 禁止组合替代发货: %s", account, reason)
 	}
 	return nil
 }
@@ -582,6 +593,11 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 	problems := make([]error, 0)
 	candidates := make([]substitutionPriceCandidate, 0)
 	pairingByAccount := make(map[string]inventory.ProductPairingValidation)
+	account, accountErr := fulfillmentAccountFromDecision(decision)
+	if accountErr != nil {
+		option.Reason = "领星账户决策要求人工处理: " + accountErr.Error()
+		return option
+	}
 	for _, key := range supportedOMSWarehouseKeys {
 		selection, err := selectWarehouseForPriceComparison(decision, quantities, key)
 		if err != nil {
@@ -589,17 +605,11 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 			continue
 		}
 		if combination != nil {
-			mapping, mapErr := s.store.WarehouseMapping(ctx, key)
-			if mapErr != nil || !mapping.Enabled || strings.TrimSpace(mapping.OMSAccount) == "" {
-				problems = append(problems, fmt.Errorf("%s: 仓库未配置可用的 OMS 账户", key))
-				continue
-			}
-			account := strings.TrimSpace(mapping.OMSAccount)
 			validation, exists := pairingByAccount[account]
 			if !exists {
-				validation, mapErr = s.inventory.ValidateProductPairing(ctx, substitutionOMSPairingRequest(account, *combination))
-				if mapErr != nil {
-					problems = append(problems, fmt.Errorf("%s: 无法校验 OMS 产品配对: %w", key, mapErr))
+				validation, err = s.inventory.ValidateProductPairing(ctx, substitutionOMSPairingRequest(account, *combination))
+				if err != nil {
+					problems = append(problems, fmt.Errorf("%s: 无法校验 OMS 产品配对: %w", key, err))
 					continue
 				}
 				pairingByAccount[account] = validation

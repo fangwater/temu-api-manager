@@ -161,7 +161,6 @@ type Warehouse struct {
 type WarehouseMapping struct {
 	OMSKey           string    `json:"oms_warehouse_key"`
 	OMSWarehouseCode string    `json:"oms_warehouse_code"`
-	OMSAccount       string    `json:"oms_account"`
 	TemuWarehouseID  string    `json:"temu_warehouse_id"`
 	TemuName         string    `json:"temu_warehouse_name"`
 	Enabled          bool      `json:"enabled"`
@@ -260,6 +259,7 @@ type Quote struct {
 	ID                  string          `json:"id"`
 	ParentOrderSN       string          `json:"parent_order_sn"`
 	OMSWarehouseKey     string          `json:"oms_warehouse_key"`
+	OMSAccount          string          `json:"oms_account"`
 	TemuWarehouseID     string          `json:"temu_warehouse_id"`
 	Region              string          `json:"region"`
 	ChannelID           int64           `json:"selected_channel_id"`
@@ -322,5 +322,6 @@ type Shipment struct {
 	ParentOrderSN        string          `json:"parent_order_sn"`
 	OMSWarehouseKey      string          `json:"oms_warehouse_key"`
 	OMSWarehouseCode     string          `json:"oms_warehouse_code"`
+	OMSAccount           string          `json:"oms_account"`
 	OMSSync              *OMSSync        `json:"oms_sync,omitempty"`
 }

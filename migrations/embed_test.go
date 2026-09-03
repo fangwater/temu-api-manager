@@ -86,11 +86,11 @@ func TestInitSQLIncludesAtomicBulkInventoryReservations(t *testing.T) {
 	}
 }
 
-func TestInitSQLRequiresWarehouseOMSAccountOwnership(t *testing.T) {
+func TestInitSQLMovesOMSAccountOwnershipToQuoteSnapshot(t *testing.T) {
 	for _, fragment := range []string{
-		"ADD COLUMN IF NOT EXISTS oms_account text",
-		"ALTER COLUMN oms_account SET NOT NULL",
-		"CHECK (oms_account IN ('dps', 'arp'))",
+		"DROP COLUMN IF EXISTS oms_account",
+		"oms_account text NOT NULL DEFAULT ''",
+		"ADD COLUMN IF NOT EXISTS oms_account text NOT NULL DEFAULT ''",
 	} {
 		if !strings.Contains(InitSQL, fragment) {
 			t.Fatalf("InitSQL is missing %q", fragment)

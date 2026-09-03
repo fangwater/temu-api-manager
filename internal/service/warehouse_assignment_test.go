@@ -115,9 +115,9 @@ func TestAssignPendingOMSPlatformOrderUsesAutomaticCarrierAndSkipsCompletedAssig
 	confirmedAt := time.Date(2026, 8, 14, 2, 0, 0, 0, time.UTC)
 	shipment := model.Shipment{
 		Status: "shipped", ConfirmedAt: &confirmedAt, ParentOrderSN: "PO-1",
-		WarehouseID: "TW-1", TrackingNumber: "TRACK-1", PackageSNList: []string{"PKG-1"},
+		WarehouseID: "TW-1", TrackingNumber: "TRACK-1", PackageSNList: []string{"PKG-1"}, OMSAccount: "dps",
 	}
-	mapping := model.WarehouseMapping{TemuWarehouseID: "TW-1", OMSWarehouseCode: "DPSNY002", OMSAccount: "dps"}
+	mapping := model.WarehouseMapping{TemuWarehouseID: "TW-1", OMSWarehouseCode: "DPSNY002"}
 	lookup := oms.PlatformOrderLookup{
 		Account: "dps", MatchCount: 1,
 		Orders: []oms.PlatformOrder{{OMSOrderNo: "SO-1", PlatformOrderNo: "PO-1", Status: 0}},
@@ -157,9 +157,9 @@ func TestAssignPendingOMSPlatformOrderDoesNotSubmitUnresolvedPreview(t *testing.
 	confirmedAt := time.Now()
 	shipment := model.Shipment{
 		Status: "shipped", ConfirmedAt: &confirmedAt, ParentOrderSN: "PO-1",
-		WarehouseID: "TW-1", TrackingNumber: "TRACK-1", PackageSNList: []string{"PKG-1"},
+		WarehouseID: "TW-1", TrackingNumber: "TRACK-1", PackageSNList: []string{"PKG-1"}, OMSAccount: "dps",
 	}
-	mapping := model.WarehouseMapping{TemuWarehouseID: "TW-1", OMSWarehouseCode: "DPSNY002", OMSAccount: "dps"}
+	mapping := model.WarehouseMapping{TemuWarehouseID: "TW-1", OMSWarehouseCode: "DPSNY002"}
 	lookup := oms.PlatformOrderLookup{
 		Account: "dps", MatchCount: 1,
 		Orders: []oms.PlatformOrder{{OMSOrderNo: "SO-1", PlatformOrderNo: "PO-1", Status: 0}},

@@ -404,7 +404,6 @@ func (s *Server) setWarehouseMapping(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		TemuWarehouseID  string `json:"temu_warehouse_id"`
 		OMSWarehouseCode string `json:"oms_warehouse_code"`
-		OMSAccount       string `json:"oms_account"`
 		Enabled          *bool  `json:"enabled"`
 	}
 	if !decodeJSON(w, r, &input) {
@@ -418,7 +417,7 @@ func (s *Server) setWarehouseMapping(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.service.SetWarehouseMapping(
 		ctx, r.PathValue("omsKey"), input.TemuWarehouseID,
-		input.OMSWarehouseCode, input.OMSAccount, enabled,
+		input.OMSWarehouseCode, enabled,
 	)
 	if err != nil {
 		s.fail(w, err)
