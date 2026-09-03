@@ -175,6 +175,22 @@ type CarrierPolicy struct {
 	Enabled      bool   `json:"enabled"`
 }
 
+type WarehouseCarrierRules struct {
+	WarehouseKey         string   `json:"warehouse_key"`
+	AllowedCarrierCodes  []string `json:"allowed_carrier_codes"`
+	AllowSignature       bool     `json:"allow_signature"`
+	AllowedCurrencyCodes []string `json:"allowed_currency_codes"`
+	SelectionMode        string   `json:"selection_mode"`
+	MaxPriceDelta        float64  `json:"max_price_delta"`
+	WarehouseTiePriority int      `json:"warehouse_tie_priority"`
+}
+
+type WarehouseCarrierPolicies struct {
+	WarehouseKey string
+	BaseRules    WarehouseCarrierRules
+	Carriers     []CarrierPolicy
+}
+
 type ShipmentPOGroup struct {
 	WarehouseKey string   `json:"warehouse_key"`
 	PONumbers    []string `json:"po_numbers"`

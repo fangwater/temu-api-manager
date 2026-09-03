@@ -309,17 +309,18 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	shippingRequest := shippingServicesRequest(order, mapped.ID, packageSpec)
-	channels, raw, err := s.temu.ShippingServices(ctx, shippingRequest)
-	if err != nil {
-		return QuoteResult{}, err
-	}
-	allowed, rejected := filterAutomaticChannels(channels.Available)
 	policies, err := s.carrierPoliciesByWarehouse(ctx, platformSKU)
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	allowed, policyRejected := filterChannelsByCarrierPolicy(allowed, request.WarehouseKey, policies[request.WarehouseKey])
+	policyGroup := policies[request.WarehouseKey]
+	shippingRequest := shippingServicesRequest(order, mapped.ID, packageSpec, policyGroup.BaseRules.AllowSignature)
+	channels, raw, err := s.temu.ShippingServices(ctx, shippingRequest)
+	if err != nil {
+		return QuoteResult{}, err
+	}
+	allowed, rejected := filterAutomaticChannels(channels.Available, policyGroup.BaseRules)
+	allowed, policyRejected := filterChannelsByCarrierPolicy(allowed, request.WarehouseKey, policyGroup.Carriers)
 	rejected = append(rejected, policyRejected...)
 	channels.Unavailable = append(channels.Unavailable, rejected...)
 	candidates := make([]autoChannelCandidate, 0, len(allowed))
@@ -331,7 +332,7 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 		candidates = append(candidates, autoChannelCandidate{
 			warehouseIndex: 0, warehouseKey: request.WarehouseKey, temuWarehouseID: mapped.ID,
 			channel: channel, amount: amount,
-			priority: configuredCarrierPriority(policies[request.WarehouseKey], carrierCode(channel)),
+			priority: configuredCarrierPriority(policyGroup.Carriers, carrierCode(channel)), rules: policyGroup.BaseRules,
 		})
 	}
 	if len(candidates) == 0 {
@@ -526,7 +527,7 @@ func quantityItems(quantities map[string]int) []inventory.PackageSpecResolveRequ
 	return result
 }
 
-func (s *Service) compareDirectOption(ctx context.Context, order model.Order, quantities map[string]int, policies map[string][]model.CarrierPolicy) SubstitutionPriceOption {
+func (s *Service) compareDirectOption(ctx context.Context, order model.Order, quantities map[string]int, policies map[string]model.WarehouseCarrierPolicies) SubstitutionPriceOption {
 	option := SubstitutionPriceOption{Kind: "direct", Items: quantityItems(quantities), Quotes: []SubstitutionPriceQuote{}}
 	decision, err := s.queryInventory(ctx, quantities)
 	if err != nil {
@@ -542,7 +543,7 @@ func (s *Service) compareDirectOption(ctx context.Context, order model.Order, qu
 	return s.quoteSubstitutionOption(ctx, order, quantities, decision, packageSpec, option, policies, nil)
 }
 
-func (s *Service) compareReplacementOption(ctx context.Context, order model.Order, combination inventory.SKUCombination, originalQuantity int, quantities map[string]int, policies map[string][]model.CarrierPolicy) SubstitutionPriceOption {
+func (s *Service) compareReplacementOption(ctx context.Context, order model.Order, combination inventory.SKUCombination, originalQuantity int, quantities map[string]int, policies map[string]model.WarehouseCarrierPolicies) SubstitutionPriceOption {
 	option := SubstitutionPriceOption{Kind: "replacement", Items: quantityItems(quantities), Quotes: []SubstitutionPriceQuote{}}
 	if err := validateSubstitutionCombination(combination); err != nil {
 		option.Reason = err.Error()
@@ -569,7 +570,7 @@ func (s *Service) compareReplacementOption(ctx context.Context, order model.Orde
 	return s.quoteSubstitutionOption(ctx, order, quantities, decision, packageSpec, option, policies, &combination)
 }
 
-func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order, quantities map[string]int, decision inventory.DecisionResponse, packageSpec model.PackageSpec, option SubstitutionPriceOption, policies map[string][]model.CarrierPolicy, combination *inventory.SKUCombination) SubstitutionPriceOption {
+func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order, quantities map[string]int, decision inventory.DecisionResponse, packageSpec model.PackageSpec, option SubstitutionPriceOption, policies map[string]model.WarehouseCarrierPolicies, combination *inventory.SKUCombination) SubstitutionPriceOption {
 	type result struct {
 		selection inventory.Selection
 		warehouse model.Warehouse
@@ -622,10 +623,10 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 			continue
 		}
 		jobs++
-		go func(selected inventory.Selection, mapped model.Warehouse) {
-			channels, _, err := s.temu.ShippingServices(ctx, shippingServicesRequest(order, mapped.ID, packageSpec))
+		go func(selected inventory.Selection, mapped model.Warehouse, rules model.WarehouseCarrierRules) {
+			channels, _, err := s.temu.ShippingServices(ctx, shippingServicesRequest(order, mapped.ID, packageSpec, rules.AllowSignature))
 			results <- result{selection: selected, warehouse: mapped, channels: channels, err: err}
-		}(selection, warehouse)
+		}(selection, warehouse, policies[key].BaseRules)
 	}
 	for range jobs {
 		current := <-results
@@ -633,8 +634,9 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 			problems = append(problems, fmt.Errorf("%s: 物流询价失败: %w", current.selection.WarehouseKey, current.err))
 			continue
 		}
-		allowed, _ := filterAutomaticChannels(current.channels.Available)
-		allowed, _ = filterChannelsByCarrierPolicy(allowed, current.selection.WarehouseKey, policies[current.selection.WarehouseKey])
+		policyGroup := policies[current.selection.WarehouseKey]
+		allowed, _ := filterAutomaticChannels(current.channels.Available, policyGroup.BaseRules)
+		allowed, _ = filterChannelsByCarrierPolicy(allowed, current.selection.WarehouseKey, policyGroup.Carriers)
 		if len(allowed) == 0 {
 			problems = append(problems, fmt.Errorf("%s: 没有符合规则的 Temu 面单渠道", current.selection.WarehouseKey))
 			continue
@@ -652,7 +654,7 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 				candidate: autoChannelCandidate{
 					warehouseKey: current.selection.WarehouseKey, temuWarehouseID: current.warehouse.ID,
 					channel: channel, amount: amount,
-					priority: configuredCarrierPriority(policies[current.selection.WarehouseKey], carrierCode(channel)),
+					priority: configuredCarrierPriority(policyGroup.Carriers, carrierCode(channel)), rules: policyGroup.BaseRules,
 				},
 				quote: SubstitutionPriceQuote{
 					WarehouseKey: current.selection.WarehouseKey, WarehouseName: current.selection.WarehouseName,

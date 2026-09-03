@@ -283,6 +283,7 @@ func candidate(id int64, warehouseKey, carrier, amount string) autoChannelCandid
 	item := autoChannelCandidate{
 		warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, amount: price(amount),
 		channel: temu.ShippingChannel{ChannelID: id, ShipCompanyID: id + 100, ShippingCompanyName: carrier, EstimatedAmount: amount, EstimatedCurrencyCode: "USD"},
+		rules:   temuBaseRules(warehouseKey),
 	}
 	item.priority = configuredCarrierPriority(testCarrierPolicies(warehouseKey), carrierCode(item.channel))
 	return item
@@ -431,7 +432,7 @@ func TestFilterAutomaticChannelsEnforcesWhitelistAndNoSignature(t *testing.T) {
 		{ChannelID: 2, ShippingCompanyName: "UniUni", EstimatedAmount: "$7.00", EstimatedCurrencyCode: "USD"},
 		{ChannelID: 3, ShippingCompanyName: "Other", EstimatedAmount: "$6.00", EstimatedCurrencyCode: "USD"},
 		{ChannelID: 4, ShippingCompanyName: "GOFO", EstimatedAmount: "$8.10", EstimatedCurrencyCode: "USD", InfoNeeded: []string{"signServiceId"}},
-	})
+	}, temuBaseRules("DPS002"))
 	if len(allowed) != 1 || allowed[0].ChannelID != 1 {
 		t.Fatalf("unexpected allowed channels: %#v", allowed)
 	}
@@ -441,24 +442,56 @@ func TestFilterAutomaticChannelsEnforcesWhitelistAndNoSignature(t *testing.T) {
 }
 
 func testCarrierPolicies(warehouseKey string) []model.CarrierPolicy {
-	policies := make([]model.CarrierPolicy, 0, len(supportedAutomaticCarrierCodes))
-	for index, code := range supportedAutomaticCarrierCodes {
+	codes := []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"}
+	policies := make([]model.CarrierPolicy, 0, len(codes))
+	for index, code := range codes {
 		policies = append(policies, model.CarrierPolicy{WarehouseKey: warehouseKey, CarrierCode: code, Priority: index + 1, Enabled: true})
 	}
 	return policies
 }
 
+func temuBaseRules(warehouseKey string) model.WarehouseCarrierRules {
+	tiePriority := 2
+	if strings.HasPrefix(warehouseKey, "DPS") {
+		tiePriority = 1
+	}
+	return model.WarehouseCarrierRules{
+		WarehouseKey: warehouseKey, AllowedCarrierCodes: []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"},
+		AllowedCurrencyCodes: []string{"USD"}, SelectionMode: "carrier_priority_within_delta", MaxPriceDelta: 0.5,
+		WarehouseTiePriority: tiePriority,
+	}
+}
+
 func TestShippingRequestsForceNoSignature(t *testing.T) {
 	order := model.Order{ParentOrderSN: "PO-1"}
 	spec := model.PackageSpec{Weight: "1", WeightUnit: "lb", Length: "2", Width: "3", Height: "4", DimensionUnit: "in"}
-	request := shippingServicesRequest(order, "WH-1", spec)
+	request := shippingServicesRequest(order, "WH-1", spec, false)
 	if signature, ok := request["signatureOnDelivery"].(bool); !ok || signature {
 		t.Fatalf("signatureOnDelivery must be false: %#v", request)
 	}
 	quote := model.Quote{ChannelID: 10, ShipCompanyID: 20, TemuWarehouseID: "WH-1"}
 	channel := temu.ShippingChannel{ChannelID: 10, ShipCompanyID: 20, ShippingCompanyName: "GOFO", InfoNeeded: []string{"signServiceId"}}
-	if _, err := shipmentCreateRequest(order, quote, spec, channel); err == nil {
+	if _, err := shipmentCreateRequest(order, quote, spec, channel, false); err == nil {
 		t.Fatal("signature-required channel must never be submitted")
+	}
+}
+
+func TestShippingRequestsAllowConfiguredSignature(t *testing.T) {
+	order := model.Order{ParentOrderSN: "PO-1"}
+	spec := model.PackageSpec{Weight: "1", WeightUnit: "lb", Length: "2", Width: "3", Height: "4", DimensionUnit: "in"}
+	request := shippingServicesRequest(order, "WH-1", spec, true)
+	if request["signatureOnDelivery"] != true {
+		t.Fatalf("signatureOnDelivery must follow XLWMS base rules: %#v", request)
+	}
+	quote := model.Quote{ChannelID: 10, ShipCompanyID: 20, TemuWarehouseID: "WH-1"}
+	channel := temu.ShippingChannel{ChannelID: 10, ShipCompanyID: 20, ShippingCompanyName: "GOFO", InfoNeeded: []string{"signServiceId"}, SignServiceID: 99}
+	created, err := shipmentCreateRequest(order, quote, spec, channel, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack := created["sendRequestList"].([]any)[0].(map[string]any)
+	if pack["signServiceId"] != int64(99) {
+		t.Fatalf("signServiceId missing from shipment request: %#v", pack)
 	}
 }
 func TestPackageSpecFromResolutionConvertsMetricToUSImperial(t *testing.T) {
@@ -508,7 +541,7 @@ func TestShipmentCreateRequestIncludesRequiredPickupSlot(t *testing.T) {
 	quote := model.Quote{ChannelID: 10, ShipCompanyID: 20, TemuWarehouseID: "WH-1"}
 	spec := model.PackageSpec{Weight: "1", WeightUnit: "lb", Length: "2", Width: "3", Height: "4", DimensionUnit: "in"}
 	channel := temu.ShippingChannel{ChannelID: 10, ShipCompanyID: 20, ShippingCompanyName: "SpeedX", InfoNeeded: []string{"pickupStartTime", "pickupEndTime"}, PickupSlots: []temu.PickupTimeSlot{{Start: 4102444800, End: 4102466400}}}
-	request, err := shipmentCreateRequest(order, quote, spec, channel)
+	request, err := shipmentCreateRequest(order, quote, spec, channel, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +563,7 @@ func TestShipmentCreateRequestRejectsMissingRequiredPickupSlot(t *testing.T) {
 	quote := model.Quote{ChannelID: 10, ShipCompanyID: 20, TemuWarehouseID: "WH-1"}
 	spec := model.PackageSpec{Weight: "1", WeightUnit: "lb", Length: "2", Width: "3", Height: "4", DimensionUnit: "in"}
 	channel := temu.ShippingChannel{ChannelID: 10, ShipCompanyID: 20, ShippingCompanyName: "SpeedX", InfoNeeded: []string{"pickupStartTime", "pickupEndTime"}}
-	if _, err := shipmentCreateRequest(order, quote, spec, channel); err == nil {
+	if _, err := shipmentCreateRequest(order, quote, spec, channel, false); err == nil {
 		t.Fatal("required pickup slot must block shipment submission")
 	}
 }

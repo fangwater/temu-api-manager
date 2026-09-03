@@ -148,7 +148,7 @@ func substitutionCandidate(warehouseKey, carrier string, amount float64, priorit
 		ShippingCompanyName: carrier, EstimatedAmount: fmt.Sprintf("%.2f", amount), EstimatedCurrencyCode: "USD",
 	}
 	return substitutionPriceCandidate{
-		candidate: autoChannelCandidate{warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, channel: channel, amount: amount, priority: priority},
+		candidate: autoChannelCandidate{warehouseKey: warehouseKey, temuWarehouseID: "temu-" + warehouseKey, channel: channel, amount: amount, priority: priority, rules: temuBaseRules(warehouseKey)},
 		quote:     SubstitutionPriceQuote{WarehouseKey: warehouseKey, TemuWarehouseID: "temu-" + warehouseKey, ShippingCompany: carrier, ChannelID: channelID, ShipCompanyID: channelID + 100, Amount: amount, Currency: "USD"},
 	}
 }

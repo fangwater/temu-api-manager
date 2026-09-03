@@ -662,12 +662,12 @@ func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) err
 
 var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
 
-func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU string) (map[string][]model.CarrierPolicy, error) {
+func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU string) (map[string]model.WarehouseCarrierPolicies, error) {
 	groups, err := s.inventory.CarrierPolicies(ctx, "temu", warehouseSKU)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string][]model.CarrierPolicy, len(groups))
+	result := make(map[string]model.WarehouseCarrierPolicies, len(groups))
 	for _, group := range groups {
 		policies := make([]model.CarrierPolicy, 0, len(group.Carriers))
 		for _, policy := range group.Carriers {
@@ -676,7 +676,16 @@ func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU s
 				Priority: policy.Priority, Enabled: policy.Enabled,
 			})
 		}
-		result[group.WarehouseKey] = policies
+		rules := model.WarehouseCarrierRules{
+			WarehouseKey: group.BaseRules.WarehouseKey, AllowedCarrierCodes: append([]string(nil), group.BaseRules.AllowedCarrierCodes...),
+			AllowSignature: group.BaseRules.AllowSignature, AllowedCurrencyCodes: append([]string(nil), group.BaseRules.AllowedCurrencyCodes...),
+			SelectionMode: group.BaseRules.SelectionMode, MaxPriceDelta: group.BaseRules.MaxPriceDelta,
+			WarehouseTiePriority: group.BaseRules.WarehouseTiePriority,
+		}
+		if rules.WarehouseKey == "" {
+			return nil, fmt.Errorf("XLWMS did not return base carrier rules for %s", group.WarehouseKey)
+		}
+		result[group.WarehouseKey] = model.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, BaseRules: rules, Carriers: policies}
 	}
 	return result, nil
 }
@@ -955,6 +964,15 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	if err != nil {
 		return QuoteResult{}, err
 	}
+	warehouseSKU := ""
+	for sku := range quantities {
+		warehouseSKU = sku
+		break
+	}
+	warehousePolicies, err := s.carrierPoliciesByWarehouse(ctx, warehouseSKU)
+	if err != nil {
+		return QuoteResult{}, err
+	}
 	jobs := make([]warehouseQuoteResult, 0, len(warehouseKeys))
 	problems := make([]error, 0)
 	for _, key := range warehouseKeys {
@@ -981,22 +999,12 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		}
 		jobs = append(jobs, warehouseQuoteResult{
 			selection: selected, warehouse: mapped,
-			shippingRequest: shippingServicesRequest(order, mapped.ID, packageSpec),
+			shippingRequest: shippingServicesRequest(order, mapped.ID, packageSpec, warehousePolicies[key].BaseRules.AllowSignature),
 		})
 	}
 	if len(jobs) == 0 {
 		return QuoteResult{}, fmt.Errorf("no eligible warehouse can be quoted: %w", errors.Join(problems...))
 	}
-	warehouseSKU := ""
-	for sku := range quantities {
-		warehouseSKU = sku
-		break
-	}
-	warehousePolicies, err := s.carrierPoliciesByWarehouse(ctx, warehouseSKU)
-	if err != nil {
-		return QuoteResult{}, err
-	}
-
 	results := make(chan warehouseQuoteResult, len(jobs))
 	var quoteWG sync.WaitGroup
 	for _, job := range jobs {
@@ -1021,13 +1029,14 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 			problems = append(problems, fmt.Errorf("%s: %w", result.selection.WarehouseKey, result.err))
 			continue
 		}
-		allowed, rejected := filterAutomaticChannels(result.channels.Available)
-		allowed, policyRejected := filterChannelsByCarrierPolicy(allowed, result.selection.WarehouseKey, warehousePolicies[result.selection.WarehouseKey])
+		policyGroup := warehousePolicies[result.selection.WarehouseKey]
+		allowed, rejected := filterAutomaticChannels(result.channels.Available, policyGroup.BaseRules)
+		allowed, policyRejected := filterChannelsByCarrierPolicy(allowed, result.selection.WarehouseKey, policyGroup.Carriers)
 		rejected = append(rejected, policyRejected...)
 		result.channels.Available = allowed
 		result.channels.Unavailable = append(result.channels.Unavailable, rejected...)
 		if len(allowed) == 0 {
-			problems = append(problems, fmt.Errorf("%s: no whitelist channel without signature service", result.selection.WarehouseKey))
+			problems = append(problems, fmt.Errorf("%s: no channel satisfies the XLWMS base carrier rules", result.selection.WarehouseKey))
 			continue
 		}
 		eligible := make([]temu.ShippingChannel, 0, len(allowed))
@@ -1049,7 +1058,8 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 				temuWarehouseID: result.warehouse.ID,
 				channel:         channel,
 				amount:          price(channel.EstimatedAmount),
-				priority:        configuredCarrierPriority(warehousePolicies[result.selection.WarehouseKey], carrierCode(channel)),
+				priority:        configuredCarrierPriority(policyGroup.Carriers, carrierCode(channel)),
+				rules:           policyGroup.BaseRules,
 			})
 		}
 	}
@@ -1063,11 +1073,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	selectedResult := quoted[choice.warehouseIndex]
 	selectedWarehouse := selectedResult.selection
 	if request.WarehouseKey == "" {
-		if hasEqualPriceARPChoice(candidates, choice) && isDPSWarehouse(choice.warehouseKey) {
-			reason += "；跨仓实时运费完全相同时优先 DPS 清货"
-		} else {
-			reason += "；仓库选择以实时运费优先于 DPS 清货"
-		}
+		reason += fmt.Sprintf("；跨仓同价时使用 XLWMS 仓库优先级 %d", choice.rules.WarehouseTiePriority)
 	}
 	choiceAnalysis := buildLabelPurchaseChoice(candidates, choice, reason, request.PreferredChannelID != 0)
 	selectedWarehouse.Reason = reason
@@ -1116,13 +1122,7 @@ type autoChannelCandidate struct {
 	channel         temu.ShippingChannel
 	amount          float64
 	priority        int
-}
-
-var supportedAutomaticCarrierCodes = []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"}
-
-var automaticCarrierWhitelist = map[string]bool{
-	"GOFO": true, "SPEEDX": true, "SWIFTX": true, "YANWEN": true,
-	"UPS": true, "USPS": true, "FEDEX": true,
+	rules           model.WarehouseCarrierRules
 }
 
 func quoteWarehouseKeys(region, preferred string) ([]string, error) {
@@ -1171,23 +1171,33 @@ func channelNeedsSignature(channel temu.ShippingChannel) bool {
 	return false
 }
 
-func filterAutomaticChannels(channels []temu.ShippingChannel) ([]temu.ShippingChannel, []temu.ShippingChannel) {
+func filterAutomaticChannels(channels []temu.ShippingChannel, rules model.WarehouseCarrierRules) ([]temu.ShippingChannel, []temu.ShippingChannel) {
+	allowedCarriers := make(map[string]bool, len(rules.AllowedCarrierCodes))
+	for _, code := range rules.AllowedCarrierCodes {
+		allowedCarriers[strings.ToUpper(strings.TrimSpace(code))] = true
+	}
+	allowedCurrencies := make(map[string]bool, len(rules.AllowedCurrencyCodes))
+	for _, code := range rules.AllowedCurrencyCodes {
+		allowedCurrencies[strings.ToUpper(strings.TrimSpace(code))] = true
+	}
 	allowed := make([]temu.ShippingChannel, 0, len(channels))
 	rejected := make([]temu.ShippingChannel, 0)
 	for _, channel := range channels {
 		code := carrierCode(channel)
+		displayCode := code
+		if displayCode == "" {
+			displayCode = strings.TrimSpace(channel.ShippingCompanyName)
+		}
 		reason := ""
 		switch {
-		case code == "UNIUNI":
-			reason = "UNIUNI 已禁用"
-		case !automaticCarrierWhitelist[code]:
-			reason = "不在自动发货物流白名单"
-		case channelNeedsSignature(channel):
-			reason = "当前一单一件自动发货强制不使用签名服务"
+		case !allowedCarriers[code]:
+			reason = fmt.Sprintf("XLWMS %s 基础规则未允许承运商 %s", rules.WarehouseKey, displayCode)
+		case channelNeedsSignature(channel) && !rules.AllowSignature:
+			reason = fmt.Sprintf("XLWMS %s 基础规则禁止签名服务", rules.WarehouseKey)
 		case math.IsInf(price(channel.EstimatedAmount), 1):
 			reason = "缺少可比较的实时运费"
-		case channel.EstimatedCurrencyCode != "" && !strings.EqualFold(channel.EstimatedCurrencyCode, "USD"):
-			reason = "实时运费不是 USD，不能应用 0.50 美元规则"
+		case channel.EstimatedCurrencyCode != "" && len(allowedCurrencies) > 0 && !allowedCurrencies[strings.ToUpper(strings.TrimSpace(channel.EstimatedCurrencyCode))]:
+			reason = fmt.Sprintf("XLWMS %s 基础规则不允许报价币种 %s", rules.WarehouseKey, channel.EstimatedCurrencyCode)
 		}
 		if reason != "" {
 			channel.UnavailableReason = reason
@@ -1224,12 +1234,23 @@ func configuredCarrierPriority(policies []model.CarrierPolicy, code string) int 
 			return policy.Priority
 		}
 	}
-	return len(supportedAutomaticCarrierCodes) + 1
+	return len(policies) + 1
 }
 
 func selectAutomaticChannel(candidates []autoChannelCandidate, preferredChannelID int64) (autoChannelCandidate, string, error) {
 	if len(candidates) == 0 {
 		return autoChannelCandidate{}, "", errors.New("Temu returned no allowed shipping channel")
+	}
+	currency := ""
+	for _, item := range candidates {
+		current := strings.ToUpper(strings.TrimSpace(item.channel.EstimatedCurrencyCode))
+		if current == "" {
+			continue
+		}
+		if currency != "" && current != currency {
+			return autoChannelCandidate{}, "", errors.New("物流报价币种不一致，不能自动比较")
+		}
+		currency = current
 	}
 	items := append([]autoChannelCandidate(nil), candidates...)
 	sort.SliceStable(items, func(i, j int) bool { return betterChannelCandidate(items[i], items[j]) })
@@ -1244,56 +1265,53 @@ func selectAutomaticChannel(candidates []autoChannelCandidate, preferredChannelI
 			return autoChannelCandidate{}, "", errors.New("preferred channel is not currently allowed")
 		}
 		sort.SliceStable(manual, func(i, j int) bool { return betterChannelCandidate(manual[i], manual[j]) })
-		return manual[0], "人工选择了当前白名单内且无需签名的物流渠道", nil
+		return manual[0], "人工选择了符合 XLWMS 基础规则的物流渠道", nil
 	}
 	minimum := items[0].amount
 	withinRange := make([]autoChannelCandidate, 0, len(items))
 	for _, item := range items {
-		if item.amount <= minimum+0.500001 {
+		delta := item.rules.MaxPriceDelta
+		if item.rules.SelectionMode == "lowest_price" {
+			delta = 0
+		}
+		if item.amount <= minimum+delta+0.000001 {
 			withinRange = append(withinRange, item)
 		}
 	}
 	sort.SliceStable(withinRange, func(i, j int) bool {
-		leftPriority, rightPriority := effectiveCarrierPriority(withinRange[i]), effectiveCarrierPriority(withinRange[j])
-		if leftPriority != rightPriority {
-			return leftPriority < rightPriority
+		left, right := withinRange[i], withinRange[j]
+		if left.rules.SelectionMode == "carrier_priority_within_delta" && right.rules.SelectionMode == "carrier_priority_within_delta" {
+			leftPriority, rightPriority := effectiveCarrierPriority(left), effectiveCarrierPriority(right)
+			if leftPriority != rightPriority {
+				return leftPriority < rightPriority
+			}
 		}
-		return betterChannelCandidate(withinRange[i], withinRange[j])
+		return betterChannelCandidate(left, right)
 	})
 	choice := withinRange[0]
-	return choice, fmt.Sprintf("%s 是 %s 的第 %d 优先快递，运费距最低价不超过 $0.50", carrierCode(choice.channel), choice.warehouseKey, effectiveCarrierPriority(choice)), nil
+	if choice.rules.SelectionMode == "carrier_priority_within_delta" {
+		return choice, fmt.Sprintf("%s 是 %s 的第 %d 优先快递，运费距最低价不超过 %.2f", carrierCode(choice.channel), choice.warehouseKey, effectiveCarrierPriority(choice), choice.rules.MaxPriceDelta), nil
+	}
+	return choice, fmt.Sprintf("按 XLWMS %s 基础规则选择最低运费 %s", choice.warehouseKey, carrierCode(choice.channel)), nil
 }
 
 func effectiveCarrierPriority(candidate autoChannelCandidate) int {
 	if candidate.priority > 0 {
 		return candidate.priority
 	}
-	return len(supportedAutomaticCarrierCodes) + 1
+	return 1000
 }
 
 func betterChannelCandidate(left, right autoChannelCandidate) bool {
 	if math.Abs(left.amount-right.amount) > 0.000001 {
 		return left.amount < right.amount
 	}
-	leftDPS, rightDPS := isDPSWarehouse(left.warehouseKey), isDPSWarehouse(right.warehouseKey)
-	if leftDPS != rightDPS {
-		return leftDPS
+	if left.rules.WarehouseTiePriority != right.rules.WarehouseTiePriority {
+		return left.rules.WarehouseTiePriority < right.rules.WarehouseTiePriority
 	}
 	return left.channel.ChannelID < right.channel.ChannelID
 }
 
-func isDPSWarehouse(key string) bool {
-	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(key)), "DPS")
-}
-
-func hasEqualPriceARPChoice(candidates []autoChannelCandidate, selected autoChannelCandidate) bool {
-	for _, item := range candidates {
-		if !isDPSWarehouse(item.warehouseKey) && math.Abs(item.amount-selected.amount) <= 0.000001 {
-			return true
-		}
-	}
-	return false
-}
 func buildLabelPurchaseChoice(candidates []autoChannelCandidate, selected autoChannelCandidate, reason string, manual bool) model.LabelPurchaseChoice {
 	selectionSource := "automatic"
 	if manual {
@@ -1424,7 +1442,7 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	} else if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
 		return PurchaseResult{}, err
 	}
-	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel)
+	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel, storedQuoteAllowsSignature(saved))
 	if err != nil {
 		return PurchaseResult{}, err
 	}
@@ -1603,7 +1621,7 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 	if saved.RecoveryShipmentID != shipment.ID {
 		return PurchaseResult{}, errors.New("quote was not created for this shipment recovery")
 	}
-	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel)
+	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel, storedQuoteAllowsSignature(saved))
 	if err != nil {
 		return PurchaseResult{}, err
 	}
@@ -2721,15 +2739,20 @@ func packageSpecFromResolution(resolution inventory.PackageResolution) (model.Pa
 	return spec, nil
 }
 
-func shippingServicesRequest(order model.Order, warehouseID string, spec model.PackageSpec) map[string]any {
+func shippingServicesRequest(order model.Order, warehouseID string, spec model.PackageSpec, allowSignature bool) map[string]any {
 	request := packageFields(spec)
 	request["warehouseId"] = warehouseID
 	request["shipOrderInfoList"] = orderSendInfo(order)
-	request["signatureOnDelivery"] = false
+	request["signatureOnDelivery"] = allowSignature
 	return request
 }
 
-func shipmentCreateRequest(order model.Order, quote model.Quote, spec model.PackageSpec, channel temu.ShippingChannel) (map[string]any, error) {
+func storedQuoteAllowsSignature(saved storedQuoteRequest) bool {
+	allowed, _ := saved.ShippingRequest["signatureOnDelivery"].(bool)
+	return allowed
+}
+
+func shipmentCreateRequest(order model.Order, quote model.Quote, spec model.PackageSpec, channel temu.ShippingChannel, allowSignature bool) (map[string]any, error) {
 	if channel.ChannelID == 0 || channel.ChannelID != quote.ChannelID || channel.ShipCompanyID != quote.ShipCompanyID {
 		return nil, errors.New("stored quote is missing the selected channel requirements; request a new quote")
 	}
@@ -2746,7 +2769,13 @@ func shipmentCreateRequest(order model.Order, quote model.Quote, spec model.Pack
 		case "pickupStartTime", "pickupEndTime":
 			requiresPickup = true
 		case "signServiceId":
-			return nil, fmt.Errorf("物流渠道 %s 要求签名服务，当前一单一件自动发货强制不签名", channel.ShippingCompanyName)
+			if !allowSignature {
+				return nil, fmt.Errorf("物流渠道 %s 要求签名服务，但 XLWMS 基础规则禁止签名", channel.ShippingCompanyName)
+			}
+			if channel.SignServiceID == 0 {
+				return nil, fmt.Errorf("物流渠道 %s 要求签名服务，但报价缺少 signServiceId", channel.ShippingCompanyName)
+			}
+			pack["signServiceId"] = channel.SignServiceID
 		case "":
 		default:
 			unsupported = append(unsupported, field)
