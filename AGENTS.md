@@ -29,11 +29,17 @@
 - Use `temu-manager baseprice-recommend` for `temu.local.goods.baseprice.recommend`; pass the nested product request with `--params-file`.
 - Raw order exports can contain sensitive business data and must be written with file mode `600`.
 
+## Service Ownership
+
+- `/home/fanghaizhou/pangu-sales-manager` owns only the activity-price analysis worker, snapshot API, and frontend on the sales server. Do not attribute general Temu fulfillment or warehouse behavior to that project.
+- `/home/ubuntu/xlwms-api-manager` owns the warehouse decision, inventory-threshold, fulfillment-shop registry, and outbound APIs exposed through `/warehouse-console/api/`. Its production PM2 process is `xlwms-api-manager` and listens on `127.0.0.1:18083` behind Nginx.
+- A warehouse-classification error such as `fulfillment shop temu/<shop-code> was not found` means that the shop is missing from the XLWMS fulfillment-shop registry. Fix the XLWMS application seed or migration and deploy `xlwms-api-manager`; do not route this work to `pangu-sales-manager` or apply ad hoc production SQL.
+- Keep `/temu/activity-prices/` as a redirect only. Do not add an activity worker or effective-price API back to this service.
+
 ## Production Deployment
 
 - Treat a request to modify this project as authorization to deploy the verified change to the live Temu service, unless the user explicitly asks for code-only or local-preview work.
-- The activity-price worker, snapshot API, and frontend are owned by `/home/fanghaizhou/pangu-sales-manager` on the sales server.
-- Keep `/temu/activity-prices/` as a redirect only. Do not add an activity worker or effective-price API back to this service.
+- Do not start or leave a local frontend development or preview server unless the user explicitly requests one. After frontend verification, publish the production build through the existing Nginx service and verify the public HTTPS route.
 - After implementation and tests pass, rebuild and restart the existing live service instead of stopping at a local or mocked preview.
 - Discover and use the host's existing service-manager and deployment commands. Do not start a second production worker because concurrent workers can sync, fulfill, or purchase labels twice.
 - Before deployment, verify the exact service unit, executable, working directory, and listening port with read-only checks.

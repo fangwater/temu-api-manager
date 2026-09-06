@@ -1280,6 +1280,14 @@ func selectAutomaticChannel(candidates []autoChannelCandidate, preferredChannelI
 		return manual[0], "人工选择了符合 XLWMS 基础规则的物流渠道", nil
 	}
 	minimum := items[0].amount
+	if items[0].rules.SelectionMode == "gofo_over_swiftx_speedx" {
+		for _, item := range items {
+			if item.rules.SelectionMode != "gofo_over_swiftx_speedx" {
+				return autoChannelCandidate{}, "", errors.New("物流选价规则不一致，转人工处理")
+			}
+		}
+		return selectGOFOPremiumChannel(items)
+	}
 	withinRange := make([]autoChannelCandidate, 0, len(items))
 	for _, item := range items {
 		delta := item.rules.MaxPriceDelta
