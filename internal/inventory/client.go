@@ -25,20 +25,21 @@ func NewClient(url string, timeout time.Duration) *Client {
 }
 
 type Warehouse struct {
-	Key                 string  `json:"warehouse_key"`
-	Code                string  `json:"wh_code"`
-	Name                string  `json:"warehouse_name"`
-	Region              string  `json:"region"`
-	Provider            string  `json:"provider"`
-	Active              bool    `json:"active"`
-	QueryStatus         string  `json:"query_status"`
-	SKUFound            bool    `json:"sku_found"`
-	Available           float64 `json:"available_amount"`
-	Selectable          bool    `json:"selectable"`
-	Recommended         bool    `json:"recommended"`
-	ReasonCode          string  `json:"reason_code"`
-	Reason              string  `json:"reason"`
-	PlatformSKUDisabled bool    `json:"platform_sku_disabled,omitempty"`
+	APIBinding          *WarehouseAPIBinding `json:"api_binding,omitempty"`
+	Key                 string               `json:"warehouse_key"`
+	Code                string               `json:"wh_code"`
+	Name                string               `json:"warehouse_name"`
+	Region              string               `json:"region"`
+	Provider            string               `json:"provider"`
+	Active              bool                 `json:"active"`
+	QueryStatus         string               `json:"query_status"`
+	SKUFound            bool                 `json:"sku_found"`
+	Available           float64              `json:"available_amount"`
+	Selectable          bool                 `json:"selectable"`
+	Recommended         bool                 `json:"recommended"`
+	ReasonCode          string               `json:"reason_code"`
+	Reason              string               `json:"reason"`
+	PlatformSKUDisabled bool                 `json:"platform_sku_disabled,omitempty"`
 }
 
 type Region struct {
@@ -166,29 +167,22 @@ type PackageResolution struct {
 	Package     *PackageSpec            `json:"package,omitempty"`
 }
 
-type FulfillmentAccountDecision struct {
-	Platform       string   `json:"platform"`
-	WarehouseSKUs  []string `json:"warehouse_skus"`
-	AccountKey     string   `json:"account_key,omitempty"`
-	WarehouseCodes []string `json:"warehouse_codes"`
-	Configured     bool     `json:"configured"`
-	RequiresManual bool     `json:"requires_manual"`
-	DecisionCode   string   `json:"decision_code"`
-	Reason         string   `json:"reason"`
+type WarehouseAPIBinding struct {
+	CredentialKey string `json:"credential_key"`
+	OMSAccountKey string `json:"oms_account_key"`
 }
 
 type DecisionResponse struct {
-	Complete             bool                       `json:"complete"`
-	RuleVersion          string                     `json:"rule_version"`
-	SafetyStockThreshold float64                    `json:"safety_stock_threshold"`
-	DefaultThresholds    InventoryThresholds        `json:"default_thresholds"`
-	InventoryBasis       string                     `json:"inventory_basis"`
-	WindowStart          string                     `json:"inventory_window_start"`
-	WindowEnd            string                     `json:"inventory_window_end"`
-	QueriedAt            time.Time                  `json:"queried_at"`
-	Records              []SKUDecision              `json:"records"`
-	PackageResolution    PackageResolution          `json:"package_resolution"`
-	AccountDecision      FulfillmentAccountDecision `json:"account_decision"`
+	Complete             bool                `json:"complete"`
+	RuleVersion          string              `json:"rule_version"`
+	SafetyStockThreshold float64             `json:"safety_stock_threshold"`
+	DefaultThresholds    InventoryThresholds `json:"default_thresholds"`
+	InventoryBasis       string              `json:"inventory_basis"`
+	WindowStart          string              `json:"inventory_window_start"`
+	WindowEnd            string              `json:"inventory_window_end"`
+	QueriedAt            time.Time           `json:"queried_at"`
+	Records              []SKUDecision       `json:"records"`
+	PackageResolution    PackageResolution   `json:"package_resolution"`
 }
 
 type envelope struct {

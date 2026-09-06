@@ -291,7 +291,7 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	if err != nil {
 		return QuoteResult{}, fmt.Errorf("替代组合库存校验失败: %w", err)
 	}
-	omsAccount, err := fulfillmentAccountFromDecision(decision)
+	omsAccount, err := fulfillmentAccountForWarehouse(decision, request.WarehouseKey)
 	if err != nil {
 		return QuoteResult{}, fmt.Errorf("领星账户决策要求人工处理: %w", err)
 	}
@@ -423,7 +423,7 @@ func (s *Service) validateStoredSubstitutionQuote(ctx context.Context, order mod
 	if _, err := selectWarehouseForPriceComparison(decision, quantities, quote.OMSWarehouseKey); err != nil {
 		return err
 	}
-	omsAccount, err := fulfillmentAccountFromDecision(decision)
+	omsAccount, err := fulfillmentAccountForWarehouse(decision, quote.OMSWarehouseKey)
 	if err != nil {
 		return fmt.Errorf("领星账户决策要求人工处理: %w", err)
 	}
@@ -593,15 +593,15 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 	problems := make([]error, 0)
 	candidates := make([]substitutionPriceCandidate, 0)
 	pairingByAccount := make(map[string]inventory.ProductPairingValidation)
-	account, accountErr := fulfillmentAccountFromDecision(decision)
-	if accountErr != nil {
-		option.Reason = "领星账户决策要求人工处理: " + accountErr.Error()
-		return option
-	}
 	for _, key := range supportedOMSWarehouseKeys {
 		selection, err := selectWarehouseForPriceComparison(decision, quantities, key)
 		if err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", key, err))
+			continue
+		}
+		account, accountErr := fulfillmentAccountForWarehouse(decision, key)
+		if accountErr != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", key, accountErr))
 			continue
 		}
 		if combination != nil {

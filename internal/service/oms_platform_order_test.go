@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"temu-api-manager/internal/inventory"
 	"temu-api-manager/internal/model"
 	"temu-api-manager/internal/oms"
 )
@@ -68,21 +67,6 @@ func TestNormalizeOMSAccount(t *testing.T) {
 		if actual != test.expected || ok != test.ok {
 			t.Fatalf("normalizeOMSAccount(%q) = (%q, %v)", test.input, actual, ok)
 		}
-	}
-}
-
-func TestFulfillmentAccountFromDecision(t *testing.T) {
-	ready := inventory.DecisionResponse{AccountDecision: inventory.FulfillmentAccountDecision{
-		AccountKey: " OMS_US_1 ", Configured: true,
-	}}
-	if account, err := fulfillmentAccountFromDecision(ready); err != nil || account != "oms_us_1" {
-		t.Fatalf("ready decision = (%q, %v)", account, err)
-	}
-	manual := inventory.DecisionResponse{AccountDecision: inventory.FulfillmentAccountDecision{
-		RequiresManual: true, Reason: "未配置",
-	}}
-	if _, err := fulfillmentAccountFromDecision(manual); err == nil || err.Error() != "未配置" {
-		t.Fatalf("manual decision error = %v", err)
 	}
 }
 

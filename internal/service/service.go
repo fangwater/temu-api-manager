@@ -72,18 +72,6 @@ func (s *Service) queryInventory(ctx context.Context, quantities map[string]int)
 	return s.inventory.QueryForShop(ctx, "temu", s.shopCode, quantities)
 }
 
-func fulfillmentAccountFromDecision(decision inventory.DecisionResponse) (string, error) {
-	account := strings.ToLower(strings.TrimSpace(decision.AccountDecision.AccountKey))
-	if decision.AccountDecision.Configured && !decision.AccountDecision.RequiresManual && account != "" {
-		return account, nil
-	}
-	reason := strings.TrimSpace(decision.AccountDecision.Reason)
-	if reason == "" {
-		reason = "平台 SKU 未配置领星履约账户"
-	}
-	return "", errors.New(reason)
-}
-
 func (s *Service) PlatformInventoryThresholds(ctx context.Context) (inventory.PlatformInventoryThresholds, error) {
 	return s.inventory.PlatformInventoryThresholds(ctx, "temu")
 }
@@ -962,10 +950,6 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	if err != nil {
 		return QuoteResult{}, err
 	}
-	omsAccount, err := fulfillmentAccountFromDecision(decision)
-	if err != nil {
-		return QuoteResult{}, fmt.Errorf("领星账户决策要求人工处理: %w", err)
-	}
 	s.logger.Info("Shipping quote inventory query completed", "parent_order_sn", order.ParentOrderSN, "duration", time.Since(inventoryStarted).String())
 	packageSpec, err := packageSpecFromResolution(decision.PackageResolution)
 	if err != nil {
@@ -997,6 +981,11 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 			problems = append(problems, fmt.Errorf("%s: %w", key, selectErr))
 			continue
 		}
+		omsAccount, accountErr := fulfillmentAccountForWarehouse(decision, key)
+		if accountErr != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", key, accountErr))
+			continue
+		}
 		mapped, mapErr := s.store.MappedWarehouse(ctx, selected.WarehouseKey)
 		if errors.Is(mapErr, pgx.ErrNoRows) {
 			problems = append(problems, fmt.Errorf("warehouse mapping required for %s", selected.WarehouseKey))
@@ -1010,7 +999,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 			continue
 		}
 		jobs = append(jobs, warehouseQuoteResult{
-			selection: selected, warehouse: mapped,
+			selection: selected, warehouse: mapped, omsAccount: omsAccount,
 			shippingRequest: shippingServicesRequest(order, mapped.ID, packageSpec, warehousePolicies[key].BaseRules.AllowSignature),
 		})
 	}
@@ -1105,7 +1094,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		selectedRegion = warehouseRegion(selectedWarehouse.WarehouseKey)
 	}
 	quote := model.Quote{ID: newID("q"), ParentOrderSN: order.ParentOrderSN,
-		OMSWarehouseKey: selectedWarehouse.WarehouseKey, OMSAccount: omsAccount, TemuWarehouseID: selectedResult.warehouse.ID,
+		OMSWarehouseKey: selectedWarehouse.WarehouseKey, OMSAccount: selectedResult.omsAccount, TemuWarehouseID: selectedResult.warehouse.ID,
 		Region: selectedRegion, ChannelID: choice.channel.ChannelID, ShipCompanyID: choice.channel.ShipCompanyID,
 		ShippingCompanyName: choice.channel.ShippingCompanyName, ShipLogisticsType: choice.channel.ShipLogisticsType,
 		SelectionReason: reason, RequestPayload: requestRecord, ResponsePayload: responseRecord,
@@ -1119,6 +1108,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 }
 
 type warehouseQuoteResult struct {
+	omsAccount      string
 	selection       inventory.Selection
 	warehouse       model.Warehouse
 	shippingRequest map[string]any
@@ -2752,6 +2742,12 @@ func packageSpecFromResolution(resolution inventory.PackageResolution) (model.Pa
 	if ounces > 0 {
 		spec.ExtendWeight = strconv.Itoa(ounces)
 		spec.ExtendWeightUnit = "oz"
+	}
+	// Temu accepts sub-pound quotes as positive pounds with at most two decimals.
+	if pounds == 0 {
+		decimalPounds := math.Ceil(pack.Weight/0.45359237*100) / 100
+		spec.Weight = strconv.FormatFloat(decimalPounds, 'f', 2, 64)
+		spec.ExtendWeight, spec.ExtendWeightUnit = "", ""
 	}
 	if err := validatePackage(spec); err != nil {
 		return model.PackageSpec{}, fmt.Errorf("invalid warehouse SKU package spec: %w", err)
