@@ -436,6 +436,12 @@ func warehouseClassificationFromDecision(order model.Order, decision inventory.D
 		Status: "eligible", Categories: []string{}, ReasonDetails: []string{},
 	}
 	if queryErr != nil {
+		if strings.Contains(queryErr.Error(), "warehouse inventory query is incomplete") {
+			item.Status = "manual"
+			item.Categories = []string{manualReasonInventoryScopeIncomplete}
+			item.ReasonDetails = []string{"仓库库存范围未配置或查询不完整，需人工处理"}
+			return item
+		}
 		item.Status = "failed"
 		item.ErrorMessage = queryErr.Error()
 		return item
@@ -490,7 +496,7 @@ func (s *Service) persistWarehouseClassification(ctx context.Context, order mode
 		return nil
 	}
 	if item.Status == "eligible" {
-		for _, reason := range []string{"sku_unbound", manualReasonInventoryRule, manualReasonWarehouseSKUSpec, manualReasonSKUWarehousePolicy} {
+		for _, reason := range []string{"sku_unbound", manualReasonInventoryRule, manualReasonInventoryScopeIncomplete, manualReasonWarehouseSKUSpec, manualReasonSKUWarehousePolicy} {
 			if err := s.store.ClearManualReviewReason(ctx, order.ParentOrderSN, reason); err != nil {
 				return fmt.Errorf("clear recovered warehouse classification %s for %s: %w", reason, order.ParentOrderSN, err)
 			}
@@ -758,10 +764,11 @@ type WarehousePreview struct {
 }
 
 const (
-	manualReasonInventoryRule      = "inventory_rule"
-	manualReasonWarehouseSKUSpec   = "warehouse_sku_spec_incomplete"
-	manualReasonDeliveryAddress    = "delivery_address_unsupported"
-	manualReasonSKUWarehousePolicy = "platform_sku_warehouse_restriction"
+	manualReasonInventoryRule            = "inventory_rule"
+	manualReasonInventoryScopeIncomplete = "inventory_scope_incomplete"
+	manualReasonWarehouseSKUSpec         = "warehouse_sku_spec_incomplete"
+	manualReasonDeliveryAddress          = "delivery_address_unsupported"
+	manualReasonSKUWarehousePolicy       = "platform_sku_warehouse_restriction"
 )
 
 func (s *Service) PreviewWarehouses(ctx context.Context, parent string) (WarehousePreview, error) {
@@ -821,7 +828,7 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 	if err := s.persistWarehouseClassification(ctx, order, classification); err != nil {
 		return WarehousePreview{}, err
 	}
-	if queryErr != nil {
+	if queryErr != nil && classification.Status == "failed" {
 		preview.InventoryError = queryErr.Error()
 		return preview, nil
 	}
@@ -2931,7 +2938,7 @@ func warehouseManualReviewCanBeRechecked(order model.Order) bool {
 		return false
 	}
 	for _, reason := range review.Reasons {
-		if reason != "sku_unbound" && reason != manualReasonInventoryRule && reason != manualReasonWarehouseSKUSpec && reason != manualReasonSKUWarehousePolicy {
+		if reason != "sku_unbound" && reason != manualReasonInventoryRule && reason != manualReasonInventoryScopeIncomplete && reason != manualReasonWarehouseSKUSpec && reason != manualReasonSKUWarehousePolicy {
 			return false
 		}
 	}
@@ -2941,6 +2948,7 @@ func warehouseManualReviewCanBeRechecked(order model.Order) bool {
 func hasBlockingWarehouseReason(review *model.ManualReview) bool {
 	return review != nil && (contains(review.Reasons, "sku_unbound") ||
 		contains(review.Reasons, manualReasonInventoryRule) ||
+		contains(review.Reasons, manualReasonInventoryScopeIncomplete) ||
 		contains(review.Reasons, manualReasonWarehouseSKUSpec) ||
 		contains(review.Reasons, manualReasonSKUWarehousePolicy) ||
 		contains(review.Reasons, manualReasonDeliveryAddress))

@@ -145,23 +145,23 @@ func (p *Postgres) ReplaceOpenOrders(ctx context.Context, orders []model.Order, 
 																																	FROM unnest(
 																																							EXCLUDED.reasons
 																																													|| CASE WHEN temu_order_manual_reviews.active
-																																																				AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																				AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
 																																																										THEN ARRAY(
 																																																																	SELECT reason FROM unnest(temu_order_manual_reviews.reasons) AS dynamic(reason)
-																																																																								WHERE reason IN ('sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported')
+																																																																								WHERE reason IN ('sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported')
 																																																																														) ELSE ARRAY[]::text[] END
 																																																																																			) AS preserved(reason) ORDER BY preserved.reason
 																																																																																							),
 																																																																																											merge_order_sn_list=EXCLUDED.merge_order_sn_list,active=true,updated_at=now(),
 																																																																																															status=CASE
-																																																																																																				WHEN temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
-																																																																																																										OR EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																																																				WHEN temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																																																										OR EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
 																																																																																																															THEN CASE WHEN temu_order_manual_reviews.status='detected' THEN 'detected' ELSE 'manual_pending' END
 																																																																																																																				WHEN temu_order_manual_reviews.status IN ('manual_pending','approved')
 																																																																																																																									THEN temu_order_manual_reviews.status ELSE 'detected' END,
 																																																																																																																													approved_at=CASE
-																																																																																																																																		WHEN temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
-																																																																																																																																								OR EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[] THEN NULL
+																																																																																																																																		WHEN temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																																																																																								OR EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[] THEN NULL
 																																																																																																																																													WHEN temu_order_manual_reviews.status='approved'
 																																												THEN temu_order_manual_reviews.approved_at ELSE NULL END
 																																												WHERE NOT (temu_order_manual_reviews.status='resolved' AND temu_order_manual_reviews.outcome<>'')
@@ -170,12 +170,12 @@ func (p *Postgres) ReplaceOpenOrders(ctx context.Context, orders []model.Order, 
 			}
 		} else if _, err := tx.Exec(ctx, `
 																																																																																																																																																																	UPDATE temu_order_manual_reviews SET
-																																																																																																																																																																				active=(reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]),
+																																																																																																																																																																				active=(reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]),
 																																																																																																																																																																							status=CASE
-																																																																																																																																																																											WHEN reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																																																																																																																											WHEN reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
 																																																																																																																																																																															THEN CASE WHEN status='detected' THEN 'detected' ELSE 'manual_pending' END
 																																																																																																																																																																																			WHEN status='approved' THEN status ELSE 'resolved' END,
-																																																																																																																																																																																						approved_at=CASE WHEN reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[] THEN NULL ELSE approved_at END,
+																																																																																																																																																																																						approved_at=CASE WHEN reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[] THEN NULL ELSE approved_at END,
 																																																																																																																																																																																									updated_at=now()
 																																																																																																																																																																																												WHERE parent_order_sn=$1 AND active
 																																																																																																																																																																																														`, order.ParentOrderSN); err != nil {
@@ -221,7 +221,7 @@ func (p *Postgres) ListOrders(ctx context.Context, query string, unreservedOnly 
             SELECT 1 FROM temu_order_manual_reviews manual
 			WHERE manual.parent_order_sn=o.parent_order_sn
 			  AND ((manual.status='resolved' AND manual.outcome<>'') OR
-			       (manual.active AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','platform_sku_warehouse_restriction','shop_sku_warehouse_restriction','delivery_address_unsupported']::text[])))
+			       (manual.active AND (manual.status<>'approved' OR manual.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','platform_sku_warehouse_restriction','shop_sku_warehouse_restriction','delivery_address_unsupported']::text[])))
         )`
 	}
 	args := []any{}

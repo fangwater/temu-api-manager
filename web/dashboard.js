@@ -265,7 +265,7 @@ function renderOrders() {
   rows.innerHTML = items.map((order) => {
     const lines = (order.lines || []).map((line) => `<span class="sku-line"><b>${escapeHtml(line.ext_code || "SKU待映射")}</b><span>× ${line.quantity}</span></span>`).join("");
     const review = order.manual_review;
-    const manualBlocked = review?.active && (review.status !== "approved" || (review.reasons || []).some((reason) => ["sku_unbound", "inventory_rule"].includes(reason)));
+    const manualBlocked = review?.active && (review.status !== "approved" || (review.reasons || []).some((reason) => ["sku_unbound", "inventory_rule", "inventory_scope_incomplete"].includes(reason)));
     const classifications = (review?.reasons || []).map((reason) => `<span class="classification-tag">${manualReasonText(reason)}</span>`).join("");
     const job = order.auto_fulfillment;
     const running = job && !["failed", "completed", "skipped"].includes(job.status);
@@ -724,7 +724,7 @@ async function syncOrders() {
   finally { setLoading(button, false); }
 }
 function manualReasonText(reason) {
-  return ({ sku_unbound: "SKU 未绑定", inventory_rule: "库存安全线不足", warehouse_sku_spec_incomplete: "仓库 SKU 包裹数据缺失", delivery_address_unsupported: "偏远地址物流不支持", multi_item: "一单多件", merge_candidate: "合并候选", platform_consolidated: "Temu 已合并" })[reason] || reason;
+  return ({ sku_unbound: "SKU 未绑定", inventory_rule: "库存安全线不足", inventory_scope_incomplete: "库存范围未配置或查询不完整", warehouse_sku_spec_incomplete: "仓库 SKU 包裹数据缺失", delivery_address_unsupported: "偏远地址物流不支持", multi_item: "一单多件", merge_candidate: "合并候选", platform_consolidated: "Temu 已合并" })[reason] || reason;
   }
 
 function manualStatusText(status) {
@@ -810,11 +810,12 @@ function renderManualOrders(focusOrder = "") {
 		        const reviewReasons = item.reasons || [];
 			    const skuUnbound = reviewReasons.includes("sku_unbound");
 			        const inventoryRule = reviewReasons.includes("inventory_rule");
+			    const inventoryScopeIncomplete = reviewReasons.includes("inventory_scope_incomplete");
 				    const packageIncomplete = reviewReasons.includes("warehouse_sku_spec_incomplete");
 				        let actions = `<button class="row-action" data-manual-action="approved" data-manual-order="${escapeHtml(item.parent_order_sn)}">批准自动发货</button>`;
 					    if (skuUnbound) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验绑定</button>`;
 					        else if (packageIncomplete) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验包裹数据</button>`;
-						    else if (inventoryRule) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验库存</button>`;
+						    else if (inventoryRule || inventoryScopeIncomplete) actions = `<button class="row-action" data-recheck-warehouse="${escapeHtml(item.parent_order_sn)}">重新校验库存</button>`;
 						        else if (item.status === "detected") actions = `<button class="row-action" data-manual-action="manual_pending" data-manual-order="${escapeHtml(item.parent_order_sn)}">转人工处理</button>`;
 							        else if (item.status === "approved") actions = `<button class="row-action" data-manual-action="manual_pending" data-manual-order="${escapeHtml(item.parent_order_sn)}">重新转人工</button>`;
 								if (item.status === "manual_pending") actions += `<button class="row-action manual-complete-action" data-complete-manual="${escapeHtml(item.parent_order_sn)}">完成人工履约</button>`;
@@ -849,6 +850,7 @@ async function recheckWarehouseEligibility(parentOrderSN, button) {
 	    if (data.inventory_error) throw new Error(data.inventory_error);
 	        const categories = data.manual_categories || [];
 		    if (categories.includes("inventory_rule")) toast("库存仍不符合自动发货安全线，订单继续保留在人工队列", true);
+		        else if (categories.includes("inventory_scope_incomplete")) toast("库存范围仍未配置完整，订单继续保留在人工队列", true);
 		        else if (categories.includes("sku_unbound")) toast("OMS 仍未返回该商品，请完成绑定后重试", true);
 			    else if (categories.includes("warehouse_sku_spec_incomplete")) toast("仓库 SKU 的包裹数据仍不完整，请补齐后重试", true);
 			        else toast("仓库库存、SKU 与包裹数据校验通过，人工分类已更新");

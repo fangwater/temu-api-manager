@@ -118,6 +118,7 @@ func TestWarehouseClassificationFromDecision(t *testing.T) {
 		{name: "package incomplete", decision: inventory.DecisionResponse{
 			PackageResolution: inventory.PackageResolution{Complete: false, Error: "尺寸缺失"},
 		}, status: "manual", categories: []string{manualReasonWarehouseSKUSpec}},
+		{name: "inventory scope incomplete is manual", queryErr: errors.New("warehouse inventory query is incomplete"), status: "manual", categories: []string{manualReasonInventoryScopeIncomplete}},
 		{name: "query failure is retried instead of manual", queryErr: errors.New("timeout"), status: "failed", categories: []string{}},
 	}
 	for _, test := range tests {

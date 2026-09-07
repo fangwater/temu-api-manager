@@ -320,6 +320,7 @@ func manualReasonExportText(reason string) string {
 	labels := map[string]string{
 		"sku_unbound":                        "SKU 未绑定",
 		"inventory_rule":                     "库存安全线不足",
+		"inventory_scope_incomplete":         "库存范围未配置或查询不完整",
 		"warehouse_sku_spec_incomplete":      "仓库 SKU 包裹数据缺失",
 		"platform_sku_warehouse_restriction": "平台 SKU 发货仓库受限",
 		"shop_sku_warehouse_restriction":     "店铺 SKU 发货仓库受限",

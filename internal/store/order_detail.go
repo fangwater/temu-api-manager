@@ -241,20 +241,20 @@ func (p *Postgres) UpsertManualReview(ctx context.Context, review model.ManualRe
 																															EXCLUDED.reasons
 																																				|| CASE WHEN temu_order_manual_reviews.active THEN ARRAY(
 																																										SELECT reason FROM unnest(temu_order_manual_reviews.reasons) AS dynamic(reason)
-																																																WHERE reason IN ('sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported')
+																																																WHERE reason IN ('sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported')
 																																																					) ELSE ARRAY[]::text[] END
 																																																									) AS preserved(reason) ORDER BY preserved.reason
 																																																												),
 																																																															merge_order_sn_list=EXCLUDED.merge_order_sn_list,active=true,updated_at=now(),
 																																																																		status=CASE
-																																																																						WHEN EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
-																																																																											OR (temu_order_manual_reviews.active AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
+																																																																						WHEN EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																											OR (temu_order_manual_reviews.active AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
 																																																																															THEN CASE WHEN temu_order_manual_reviews.status='detected' THEN 'detected' ELSE 'manual_pending' END
 																																																																																			WHEN temu_order_manual_reviews.status IN ('manual_pending','approved')
 																																																																																							THEN temu_order_manual_reviews.status ELSE 'detected' END,
 																																																																																										approved_at=CASE
-																																																																																														WHEN EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
-																																																																																																			OR (temu_order_manual_reviews.active AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
+																																																																																														WHEN EXCLUDED.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[]
+																																																																																																			OR (temu_order_manual_reviews.active AND temu_order_manual_reviews.reasons && ARRAY['sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported']::text[])
 																																		THEN NULL ELSE temu_order_manual_reviews.approved_at END
 																																		WHERE NOT (temu_order_manual_reviews.status='resolved' AND temu_order_manual_reviews.outcome<>'')
 																																																																																																								`, review.ParentOrderSN, review.Reasons, review.MergeOrderSNs)
@@ -324,7 +324,7 @@ func (p *Postgres) ListWarehouseClassificationCandidates(ctx context.Context, li
             WHERE manual.parent_order_sn=o.parent_order_sn AND manual.active AND manual.status<>'approved'
               AND EXISTS (
                 SELECT 1 FROM unnest(manual.reasons) AS classified(reason)
-                WHERE classified.reason NOT IN ('sku_unbound','inventory_rule','warehouse_sku_spec_incomplete','delivery_address_unsupported')
+                WHERE classified.reason NOT IN ('sku_unbound','inventory_rule','inventory_scope_incomplete','warehouse_sku_spec_incomplete','delivery_address_unsupported')
               )
           )
           AND (
