@@ -878,12 +878,13 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 }
 
 type QuoteRequest struct {
-	ParentOrderSN      string   `json:"parent_order_sn"`
-	Region             string   `json:"region"`
-	WarehouseKey       string   `json:"warehouse_key"`
-	PreferredChannelID int64    `json:"preferred_channel_id,omitempty"`
-	ExcludedCarriers   []string `json:"-"`
-	RecoveryShipmentID string   `json:"-"`
+	ParentOrderSN         string   `json:"parent_order_sn"`
+	Region                string   `json:"region"`
+	WarehouseKey          string   `json:"warehouse_key"`
+	PreferredChannelID    int64    `json:"preferred_channel_id,omitempty"`
+	ExcludedCarriers      []string `json:"-"`
+	ExcludedWarehouseKeys []string `json:"-"`
+	RecoveryShipmentID    string   `json:"-"`
 }
 
 type QuoteResult struct {
@@ -966,6 +967,10 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	warehouseKeys, err := quoteWarehouseKeys(request.Region, request.WarehouseKey)
 	if err != nil {
 		return QuoteResult{}, err
+	}
+	warehouseKeys = filterWarehouseKeys(warehouseKeys, request.ExcludedWarehouseKeys)
+	if len(warehouseKeys) == 0 {
+		return QuoteResult{}, errors.New("all eligible warehouses have exhausted reservable inventory")
 	}
 	warehouseSKU := ""
 	for sku := range quantities {
@@ -1149,6 +1154,23 @@ func quoteWarehouseKeys(region, preferred string) ([]string, error) {
 		return nil, errors.New("region must be east, west, or auto")
 	}
 }
+
+func filterWarehouseKeys(keys, excluded []string) []string {
+	excludedSet := make(map[string]bool, len(excluded))
+	for _, key := range excluded {
+		if key = strings.ToUpper(strings.TrimSpace(key)); key != "" {
+			excludedSet[key] = true
+		}
+	}
+	filtered := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !excludedSet[strings.ToUpper(strings.TrimSpace(key))] {
+			filtered = append(filtered, key)
+		}
+	}
+	return filtered
+}
+
 func warehouseRegion(key string) string {
 	switch strings.ToUpper(strings.TrimSpace(key)) {
 	case "DPS002", "ARP_EAST":
@@ -1448,6 +1470,11 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	if !order.Open || order.Status != 2 {
 		return PurchaseResult{}, errOrderNoLongerAwaitingShipment
 	}
+	if existing, lookupErr := s.store.ShipmentForOrder(ctx, order.ParentOrderSN); lookupErr == nil && !shipmentRetryable(existing) {
+		return PurchaseResult{Shipment: existing, Duplicate: true}, nil
+	} else if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return PurchaseResult{}, lookupErr
+	}
 	var saved storedQuoteRequest
 	if err := json.Unmarshal(quote.RequestPayload, &saved); err != nil {
 		return PurchaseResult{}, errors.New("stored quote request is invalid")
@@ -1463,6 +1490,9 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	if err != nil {
 		return PurchaseResult{}, err
 	}
+	if _, err := s.reserveFulfillmentInventory(ctx, order, quote, saved); err != nil {
+		return PurchaseResult{}, err
+	}
 	requestRaw, _ := json.Marshal(request)
 	shipment := model.Shipment{ID: newID("s"), QuoteID: quote.ID,
 		IdempotencyKey: "buy-label:v1:" + order.ParentOrderSN, SelectionMode: "exact_channel",
@@ -1471,6 +1501,9 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 		RequestPayload: requestRaw, ParentOrderSN: order.ParentOrderSN}
 	reserved, duplicate, err := s.store.ReserveShipment(ctx, shipment, saved.ChoiceAnalysis)
 	if err != nil {
+		if _, lookupErr := s.store.ShipmentForOrder(context.WithoutCancel(ctx), order.ParentOrderSN); errors.Is(lookupErr, pgx.ErrNoRows) {
+			_ = s.releaseFulfillmentInventory(context.WithoutCancel(ctx), order.ParentOrderSN)
+		}
 		return PurchaseResult{}, err
 	}
 	if duplicate {
@@ -1499,6 +1532,76 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	}
 	updated, callErr := s.submitReservedShipment(ctx, reserved, request)
 	return PurchaseResult{Shipment: updated, Duplicate: duplicate}, callErr
+}
+
+func (s *Service) reserveFulfillmentInventory(ctx context.Context, order model.Order, quote model.Quote, saved storedQuoteRequest) (inventory.FulfillmentInventoryReservation, error) {
+	quantities := orderQuantities(order)
+	if saved.Substitution != nil {
+		quantities = saved.Substitution.Quantities
+	}
+	decision, err := s.queryInventory(ctx, quantities)
+	if err != nil {
+		return inventory.FulfillmentInventoryReservation{}, fmt.Errorf("refresh inventory before label purchase: %w", err)
+	}
+	var selection inventory.Selection
+	if saved.Substitution != nil {
+		selection, err = selectWarehouseForPriceComparison(decision, quantities, quote.OMSWarehouseKey)
+	} else {
+		selection, err = inventory.SelectWarehouse(decision, warehouseRegion(quote.OMSWarehouseKey), quantities, quote.OMSWarehouseKey)
+	}
+	if err != nil {
+		return inventory.FulfillmentInventoryReservation{}, fmt.Errorf("%w: selected warehouse is no longer eligible: %v", inventory.ErrReservationCapacity, err)
+	}
+	request, err := fulfillmentInventoryReservationRequest("temu", s.shopCode, order.ParentOrderSN, selection, quantities)
+	if err != nil {
+		return inventory.FulfillmentInventoryReservation{}, fmt.Errorf("%w: cannot reserve selected warehouse: %v", inventory.ErrReservationCapacity, err)
+	}
+	return s.inventory.ReserveFulfillmentInventory(ctx, request)
+}
+
+func fulfillmentInventoryReservationRequest(platform, shopCode, orderKey string, selection inventory.Selection, quantities map[string]int) (inventory.FulfillmentInventoryReservationRequest, error) {
+	warehouseKey := strings.ToUpper(strings.TrimSpace(selection.WarehouseKey))
+	warehouseCode := ""
+	availableBySKU := make(map[string]int, len(quantities))
+	for _, record := range selection.Decision.Records {
+		for _, region := range record.Regions {
+			for _, warehouse := range region.Warehouses {
+				if !strings.EqualFold(strings.TrimSpace(warehouse.Key), warehouseKey) {
+					continue
+				}
+				code := strings.ToUpper(strings.TrimSpace(warehouse.Code))
+				if code == "" {
+					return inventory.FulfillmentInventoryReservationRequest{}, fmt.Errorf("warehouse %s has no physical warehouse code", warehouseKey)
+				}
+				if warehouseCode != "" && warehouseCode != code {
+					return inventory.FulfillmentInventoryReservationRequest{}, fmt.Errorf("warehouse %s resolved to conflicting physical warehouse codes", warehouseKey)
+				}
+				warehouseCode = code
+				availableBySKU[strings.TrimSpace(record.SKU)] = int(math.Floor(warehouse.Available))
+			}
+		}
+	}
+	if warehouseCode == "" {
+		return inventory.FulfillmentInventoryReservationRequest{}, fmt.Errorf("inventory decision has no warehouse %s", warehouseKey)
+	}
+	items := make([]inventory.FulfillmentInventoryReservationItem, 0, len(quantities))
+	for _, sku := range sortedKeys(quantities) {
+		available, exists := availableBySKU[sku]
+		if !exists {
+			return inventory.FulfillmentInventoryReservationRequest{}, fmt.Errorf("inventory decision has no warehouse %s record for SKU %s", warehouseKey, sku)
+		}
+		items = append(items, inventory.FulfillmentInventoryReservationItem{
+			WarehouseSKU: sku, Quantity: quantities[sku], ObservedAvailable: available,
+		})
+	}
+	return inventory.FulfillmentInventoryReservationRequest{
+		Platform: platform, ShopCode: shopCode, OrderKey: strings.TrimSpace(orderKey),
+		WarehouseKey: warehouseKey, WarehouseCode: warehouseCode, ObservedAt: selection.Decision.QueriedAt, Items: items,
+	}, nil
+}
+
+func (s *Service) releaseFulfillmentInventory(ctx context.Context, orderKey string) error {
+	return s.inventory.ReleaseFulfillmentInventory(ctx, "temu", s.shopCode, orderKey)
 }
 
 func (s *Service) submitReservedShipment(ctx context.Context, reserved model.Shipment, request map[string]any) (model.Shipment, error) {
@@ -1641,6 +1744,9 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel, storedQuoteAllowsSignature(saved))
 	if err != nil {
 		return PurchaseResult{}, err
+	}
+	if _, err := s.reserveFulfillmentInventory(ctx, order, quote, saved); err != nil {
+		return PurchaseResult{Shipment: shipment}, err
 	}
 	requestRaw, _ := json.Marshal(request)
 	replacement := model.Shipment{
@@ -1900,7 +2006,11 @@ func (s *Service) CheckOMSSync(ctx context.Context, id string) (model.Shipment, 
 	}
 	if !started {
 		if current.Status == "verified" || current.Status == "terminal" || current.Status == "querying" {
-			return s.store.GetShipment(ctx, shipment.ID)
+			updated, refreshErr := s.store.GetShipment(ctx, shipment.ID)
+			if refreshErr != nil {
+				return shipment, refreshErr
+			}
+			return s.releaseVerifiedInventoryReservation(ctx, updated)
 		}
 		if current.Status == "manual_required" {
 			updated, refreshErr := s.store.GetShipment(ctx, shipment.ID)
@@ -1911,7 +2021,21 @@ func (s *Service) CheckOMSSync(ctx context.Context, id string) (model.Shipment, 
 		}
 		return shipment, nil
 	}
-	return s.reconcileOMSPlatformOrder(ctx, shipment, mapping)
+	updated, err := s.reconcileOMSPlatformOrder(ctx, shipment, mapping)
+	if err != nil {
+		return updated, err
+	}
+	return s.releaseVerifiedInventoryReservation(ctx, updated)
+}
+
+func (s *Service) releaseVerifiedInventoryReservation(ctx context.Context, shipment model.Shipment) (model.Shipment, error) {
+	if shipment.OMSSync == nil || shipment.OMSSync.Status != "verified" {
+		return shipment, nil
+	}
+	if err := s.releaseFulfillmentInventory(context.WithoutCancel(ctx), shipment.ParentOrderSN); err != nil {
+		return shipment, fmt.Errorf("release OMS-verified inventory reservation: %w", err)
+	}
+	return shipment, nil
 }
 
 func (s *Service) failOMSSync(ctx context.Context, shipment model.Shipment, orders []oms.OutboundOrder, cause error) (model.Shipment, error) {
@@ -2285,17 +2409,26 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 						WarehouseKey:       candidate.WarehouseKey,
 						PreferredChannelID: candidate.ChannelID,
 					})
-					if purchaseErr == nil || purchased.Shipment.ID != "" || !errors.Is(purchaseErr, store.ErrBulkInventoryCapacity) {
+					if purchaseErr == nil || purchased.Shipment.ID != "" || errors.Is(purchaseErr, errOrderNoLongerAwaitingShipment) {
 						break
 					}
 				}
 			}
 		} else {
-			quote, quoteErr := s.Quote(ctx, QuoteRequest{ParentOrderSN: job.ParentOrderSN, Region: "auto"})
-			if quoteErr != nil {
-				purchaseErr = quoteErr
-			} else {
+			excludedWarehouses := make([]string, 0, len(supportedOMSWarehouseKeys))
+			for {
+				quote, quoteErr := s.Quote(ctx, QuoteRequest{
+					ParentOrderSN: job.ParentOrderSN, Region: "auto", ExcludedWarehouseKeys: excludedWarehouses,
+				})
+				if quoteErr != nil {
+					purchaseErr = quoteErr
+					break
+				}
 				purchased, purchaseErr = s.Purchase(ctx, quote.Quote.ID)
+				if purchaseErr == nil || purchased.Shipment.ID != "" || !errors.Is(purchaseErr, inventory.ErrReservationCapacity) {
+					break
+				}
+				excludedWarehouses = append(excludedWarehouses, quote.Quote.OMSWarehouseKey)
 			}
 		}
 		if purchaseErr != nil && purchased.Shipment.ID == "" {
@@ -2325,7 +2458,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 			}
 			_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, purchaseErr.Error())
 			if nextStatus == "failed" {
-				return s.releaseFailedSubstitutionInventory(ctx, job, purchaseErr)
+				return s.releaseFailedFulfillmentInventory(ctx, job, purchaseErr)
 			}
 		}
 	} else if err != nil {
@@ -2345,7 +2478,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 				}
 				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, recoverErr.Error())
 				if nextStatus == "failed" {
-					return s.releaseFailedSubstitutionInventory(ctx, job, recoverErr)
+					return s.releaseFailedFulfillmentInventory(ctx, job, recoverErr)
 				}
 				return recoverErr
 			}
@@ -2366,7 +2499,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 				}
 				_ = s.store.UpdateAutoFulfillment(context.WithoutCancel(ctx), job.ParentOrderSN, shipment.ID, nextStatus, refreshErr.Error())
 				if nextStatus == "failed" {
-					return refreshErr
+					return s.releaseFailedFulfillmentInventory(ctx, job, refreshErr)
 				}
 				if shipment.Status == "submission_unknown" && nextStatus == "waiting_label" {
 					return nil
@@ -2429,7 +2562,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 				}
 				message := shipment.ErrorMessage + "；Temu 已创建失败包裹，已安全转入人工处理，未重复购单"
 				updateErr := s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "skipped", message)
-				return s.releaseFailedSubstitutionInventory(ctx, job, updateErr)
+				return s.releaseFailedFulfillmentInventory(ctx, job, updateErr)
 			}
 			if automaticCarrierFallbackAllowed(shipment) {
 				failedCarrier := carrierCode(temu.ShippingChannel{ShippingCompanyName: shipment.ShippingCompanyName, ShipLogisticsType: shipment.ShipLogisticsType})
@@ -2457,7 +2590,7 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 				message = "Temu label purchase failed"
 			}
 			updateErr := s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "failed", message)
-			return s.releaseFailedSubstitutionInventory(ctx, job, updateErr)
+			return s.releaseFailedFulfillmentInventory(ctx, job, updateErr)
 		default:
 			return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "failed", "unsupported shipment status: "+shipment.Status)
 		}
@@ -2465,13 +2598,16 @@ func (s *Service) runAutoFulfillment(ctx context.Context, job model.AutoFulfillm
 	return s.store.UpdateAutoFulfillment(ctx, job.ParentOrderSN, shipment.ID, "waiting_oms", "")
 }
 
-func (s *Service) releaseFailedSubstitutionInventory(ctx context.Context, job model.AutoFulfillmentJob, cause error) error {
-	if job.FulfillmentMode != model.FulfillmentModeSubstitution {
-		return cause
-	}
-	_, releaseErr := s.store.ReleaseBulkSubstitutionInventory(context.WithoutCancel(ctx), job.ParentOrderSN)
+func (s *Service) releaseFailedFulfillmentInventory(ctx context.Context, job model.AutoFulfillmentJob, cause error) error {
+	releaseErr := s.releaseFulfillmentInventory(context.WithoutCancel(ctx), job.ParentOrderSN)
 	if releaseErr != nil {
-		return errors.Join(cause, fmt.Errorf("release failed substitution inventory reservation: %w", releaseErr))
+		cause = errors.Join(cause, fmt.Errorf("release failed fulfillment inventory reservation: %w", releaseErr))
+	}
+	if job.FulfillmentMode == model.FulfillmentModeSubstitution {
+		_, legacyReleaseErr := s.store.ReleaseBulkSubstitutionInventory(context.WithoutCancel(ctx), job.ParentOrderSN)
+		if legacyReleaseErr != nil {
+			cause = errors.Join(cause, fmt.Errorf("release legacy substitution inventory reservation: %w", legacyReleaseErr))
+		}
 	}
 	return cause
 }

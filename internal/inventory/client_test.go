@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -230,5 +231,52 @@ func TestUpdatePackageSpecForwardsExactWarehouseSKU(t *testing.T) {
 	}
 	if item.WarehouseSKU != "PH+H-12Pcs-Black-42cm" || !item.Complete {
 		t.Fatalf("unexpected updated spec: %#v", item)
+	}
+}
+
+func TestReserveFulfillmentInventoryReturnsCapacitySentinel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/fulfillment/inventory-reservations" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("X-Temu-Shop") != "panda-homes" {
+			t.Fatalf("unexpected shop header: %q", request.Header.Get("X-Temu-Shop"))
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(writer, `{"success":false,"code":"INVENTORY_CAPACITY_EXHAUSTED","error":"stock is already reserved"}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	_, err := client.ReserveFulfillmentInventory(context.Background(), FulfillmentInventoryReservationRequest{
+		Platform: "temu", ShopCode: "panda-homes", OrderKey: "PO-1", WarehouseKey: "DPS002", WarehouseCode: "WH-1",
+		ObservedAt: time.Now(), Items: []FulfillmentInventoryReservationItem{{WarehouseSKU: "SKU-1", Quantity: 1, ObservedAvailable: 1}},
+	})
+	if !errors.Is(err, ErrReservationCapacity) {
+		t.Fatalf("got %v, want reservation capacity error", err)
+	}
+}
+
+func TestReleaseFulfillmentInventoryUsesManagerEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/fulfillment/inventory-reservations/release" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["order_key"] != "PO-1" || payload["shop_code"] != "panda-homes" {
+			t.Fatalf("unexpected release payload: %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"success":true,"data":{"released":true}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL+"/v1/temu/warehouse-availability/query", time.Second)
+	if err := client.ReleaseFulfillmentInventory(context.Background(), "temu", "panda-homes", " PO-1 "); err != nil {
+		t.Fatal(err)
 	}
 }

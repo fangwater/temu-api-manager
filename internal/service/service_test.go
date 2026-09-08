@@ -579,6 +579,35 @@ func TestQuoteWarehouseKeysAutoIncludesAllBusinessWarehousesInOrder(t *testing.T
 	}
 }
 
+func TestFilterWarehouseKeysExcludesCapacityConflicts(t *testing.T) {
+	got := filterWarehouseKeys([]string{"DPS002", "ARP_EAST", "DPS004"}, []string{" dps002 ", "DPS004"})
+	want := []string{"ARP_EAST"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestFulfillmentInventoryReservationRequestUsesPhysicalWarehouseCapacity(t *testing.T) {
+	observedAt := time.Now()
+	selection := inventory.Selection{WarehouseKey: "DPS002", Decision: inventory.DecisionResponse{
+		QueriedAt: observedAt,
+		Records: []inventory.SKUDecision{
+			{SKU: "SKU-B", Regions: []inventory.Region{{Region: "east", Warehouses: []inventory.Warehouse{{Key: "DPS002", Code: "US-EAST", Available: 2.9}}}}},
+			{SKU: "SKU-A", Regions: []inventory.Region{{Region: "east", Warehouses: []inventory.Warehouse{{Key: "DPS002", Code: "US-EAST", Available: 5}}}}},
+		},
+	}}
+	request, err := fulfillmentInventoryReservationRequest("temu", "panda-homes", "PO-1", selection, map[string]int{"SKU-B": 2, "SKU-A": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.WarehouseCode != "US-EAST" || !request.ObservedAt.Equal(observedAt) || len(request.Items) != 2 {
+		t.Fatalf("unexpected reservation request: %#v", request)
+	}
+	if request.Items[0].WarehouseSKU != "SKU-A" || request.Items[1].WarehouseSKU != "SKU-B" || request.Items[1].ObservedAvailable != 2 {
+		t.Fatalf("unexpected reservation items: %#v", request.Items)
+	}
+}
+
 func TestWarehouseRegionMapsAutomaticCandidates(t *testing.T) {
 	cases := map[string]string{"DPS002": "east", "ARP_EAST": "east", "DPS004": "west", "ARP_WEST": "west"}
 	for warehouse, want := range cases {

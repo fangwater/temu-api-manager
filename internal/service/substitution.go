@@ -187,26 +187,7 @@ func (s *Service) PurchaseSubstitution(ctx context.Context, request Substitution
 	if err != nil {
 		return PurchaseResult{}, err
 	}
-	items, err := bulkInventoryReservationItems(quoted.WarehouseSelection, quoted.Quote.OMSWarehouseKey, quoted.Quote.RequestPayload)
-	if err != nil {
-		return PurchaseResult{}, err
-	}
-	reserved, err := s.store.ReserveBulkSubstitutionInventory(ctx, quoted.Quote.ParentOrderSN, quoted.Quote.OMSWarehouseKey, items)
-	if err != nil {
-		return PurchaseResult{}, err
-	}
-	result, purchaseErr := s.PurchaseAndQueueCompletion(ctx, quoted.Quote.ID)
-	if reserved && result.Shipment.ID == "" {
-		if _, lookupErr := s.store.ShipmentForOrder(context.WithoutCancel(ctx), quoted.Quote.ParentOrderSN); errors.Is(lookupErr, pgx.ErrNoRows) {
-			_, releaseErr := s.store.ReleaseBulkSubstitutionInventory(context.WithoutCancel(ctx), quoted.Quote.ParentOrderSN)
-			if releaseErr != nil {
-				purchaseErr = errors.Join(purchaseErr, fmt.Errorf("release unused bulk inventory reservation: %w", releaseErr))
-			}
-		} else if lookupErr != nil {
-			purchaseErr = errors.Join(purchaseErr, fmt.Errorf("verify shipment before releasing bulk inventory reservation: %w", lookupErr))
-		}
-	}
-	return result, purchaseErr
+	return s.PurchaseAndQueueCompletion(ctx, quoted.Quote.ID)
 }
 
 func bulkInventoryReservationItems(selection inventory.Selection, warehouseKey string, requestPayload json.RawMessage) ([]model.BulkInventoryReservationItem, error) {

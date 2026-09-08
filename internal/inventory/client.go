@@ -20,6 +20,8 @@ type Client struct {
 	httpClient *http.Client
 }
 
+var ErrReservationCapacity = errors.New("warehouse inventory reservation capacity exhausted")
+
 func NewClient(url string, timeout time.Duration) *Client {
 	return &Client{url: strings.TrimSpace(url), httpClient: &http.Client{Timeout: timeout}}
 }
@@ -185,6 +187,34 @@ type DecisionResponse struct {
 	PackageResolution    PackageResolution   `json:"package_resolution"`
 }
 
+type FulfillmentInventoryReservationItem struct {
+	WarehouseSKU      string `json:"warehouse_sku"`
+	Quantity          int    `json:"quantity"`
+	ObservedAvailable int    `json:"observed_available"`
+}
+
+type FulfillmentInventoryReservationRequest struct {
+	Platform      string                                `json:"platform"`
+	ShopCode      string                                `json:"shop_code"`
+	OrderKey      string                                `json:"order_key"`
+	WarehouseKey  string                                `json:"warehouse_key"`
+	WarehouseCode string                                `json:"wh_code"`
+	ObservedAt    time.Time                             `json:"observed_at"`
+	Items         []FulfillmentInventoryReservationItem `json:"items"`
+}
+
+type FulfillmentInventoryReservation struct {
+	Platform      string                                `json:"platform"`
+	ShopCode      string                                `json:"shop_code"`
+	OrderKey      string                                `json:"order_key"`
+	WarehouseKey  string                                `json:"warehouse_key"`
+	WarehouseCode string                                `json:"wh_code"`
+	ObservedAt    time.Time                             `json:"observed_at"`
+	Items         []FulfillmentInventoryReservationItem `json:"items"`
+	Created       bool                                  `json:"created"`
+	ExpiresAt     time.Time                             `json:"expires_at"`
+}
+
 type envelope struct {
 	Success bool             `json:"success"`
 	Data    DecisionResponse `json:"data"`
@@ -248,6 +278,49 @@ func (c *Client) QueryForShop(ctx context.Context, platform, shopCode string, qu
 		return result.Data, errors.New("warehouse inventory query is incomplete")
 	}
 	return result.Data, nil
+}
+
+func (c *Client) ReserveFulfillmentInventory(ctx context.Context, input FulfillmentInventoryReservationRequest) (FulfillmentInventoryReservation, error) {
+	platform, shopCode, err := normalizeShopScope(input.Platform, input.ShopCode)
+	if err != nil {
+		return FulfillmentInventoryReservation{}, err
+	}
+	input.Platform = platform
+	input.ShopCode = shopCode
+	endpoint, err := c.managerEndpoint("/fulfillment/inventory-reservations")
+	if err != nil {
+		return FulfillmentInventoryReservation{}, err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return FulfillmentInventoryReservation{}, err
+	}
+	var result FulfillmentInventoryReservation
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, body, platform, shopCode, &result); err != nil {
+		return FulfillmentInventoryReservation{}, fmt.Errorf("reserve warehouse inventory: %w", err)
+	}
+	return result, nil
+}
+
+func (c *Client) ReleaseFulfillmentInventory(ctx context.Context, platform, shopCode, orderKey string) error {
+	platform, shopCode, err := normalizeShopScope(platform, shopCode)
+	if err != nil {
+		return err
+	}
+	payload := map[string]string{"platform": platform, "shop_code": shopCode, "order_key": strings.TrimSpace(orderKey)}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.managerEndpoint("/fulfillment/inventory-reservations/release")
+	if err != nil {
+		return err
+	}
+	var result map[string]bool
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, body, platform, shopCode, &result); err != nil {
+		return fmt.Errorf("release warehouse inventory: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) ResolvePackageSpecs(ctx context.Context, items []PackageSpecResolveRequest) (PackageResolution, error) {
@@ -627,6 +700,7 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body []byt
 		Success bool            `json:"success"`
 		Data    json.RawMessage `json:"data"`
 		Error   string          `json:"error"`
+		Code    string          `json:"code"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return errors.New("warehouse manager returned invalid JSON")
@@ -635,6 +709,9 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, body []byt
 		message := strings.TrimSpace(result.Error)
 		if message == "" {
 			message = fmt.Sprintf("warehouse manager returned HTTP %d", response.StatusCode)
+		}
+		if result.Code == "INVENTORY_CAPACITY_EXHAUSTED" {
+			return fmt.Errorf("%w: %s", ErrReservationCapacity, message)
 		}
 		return errors.New(message)
 	}

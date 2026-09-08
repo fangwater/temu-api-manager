@@ -16,7 +16,7 @@ const (
 	DefaultDocumentProxyBaseURL      = "http://13.115.227.29:6355"
 	DefaultAPIRequestInterval        = 250 * time.Millisecond
 	DefaultListen                    = "127.0.0.1:18082"
-	DefaultWarehouseDecisionURL      = "https://pangutech.online/warehouse-console/api/temu/warehouse-availability/query"
+	DefaultWarehouseDecisionURL      = "http://127.0.0.1:18083/v1/temu/warehouse-availability/query"
 	DefaultXLWMSOutboundURL          = "https://pangutech.online/warehouse-console/api/outbound"
 	DefaultOrderSyncInterval         = 5 * time.Minute
 	DefaultOMSQueryInterval          = 2 * time.Minute

@@ -12,6 +12,23 @@ XLWMS fulfillment state.
 The worker resumes after a service restart and never purchases a second label
 for an order that already has a shipment record.
 
+## Inventory Reservation And Warehouse Retry
+
+Immediately before every Buy Label submission, the service refreshes the XLWMS
+decision and atomically reserves the selected physical warehouse and SKU
+quantities. Reservations are shared across shops, so concurrent orders cannot
+all consume the same observed stock. When a warehouse becomes ineligible or its
+capacity was claimed by another order, automatic fulfillment excludes that
+warehouse and quotes the remaining eligible warehouses. The order fails only
+after no remaining warehouse can produce a valid option.
+
+The reservation is idempotent per shop and parent order. It remains active while
+the Temu submission result is uncertain, is released after XLWMS verifies the
+outbound order, and is released on a terminal automatic-fulfillment failure.
+XLWMS expires abandoned reservations after 24 hours. These internal write calls
+use the loopback XLWMS endpoint; the public warehouse-console proxy cannot call
+them.
+
 ## Stalled Label Confirmation Recovery
 
 Shipment reservation now creates or binds its durable completion job in the
