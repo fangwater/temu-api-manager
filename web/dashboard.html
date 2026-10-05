@@ -261,7 +261,7 @@
             <div class="page-head"><div><h1>库存安全线</h1><p>Temu 平台统一维护自动发货转人工阈值，未单独设置的 SKU 使用平台默认</p></div><button class="secondary-button" id="refresh-inventory-thresholds"><svg><use href="#i-refresh"/></svg>刷新</button></div>
             <form class="threshold-defaults" id="platform-threshold-form">
               <div class="threshold-default-title"><strong>Temu 平台默认</strong><small id="platform-threshold-scope">Temu 全部店铺共用</small></div>
-              <label><span>四仓总库存低于或等于</span><input id="platform-total-threshold" required type="number" min="0" step="1"></label>
+              <label><span>发货库存合计低于</span><input id="platform-total-threshold" required type="number" min="0" step="1"></label>
               <div class="threshold-default-actions">
                 <button class="primary-button" type="submit"><svg><use href="#i-check"/></svg>保存平台默认</button>
               </div>
@@ -271,7 +271,7 @@
               <span class="table-note" id="inventory-threshold-total">共 0 个 SKU</span>
             </div>
             <div class="table-shell sku-rule-table">
-              <table><thead><tr><th>仓库 SKU / 商品</th><th>美东库存</th><th>美西库存</th><th>四仓总库存</th><th>安全线</th><th>规则来源</th><th></th></tr></thead><tbody id="inventory-threshold-rows"></tbody></table>
+              <table><thead><tr><th>仓库 SKU / 商品</th><th>DPS002</th><th>ARP-宾夕法尼亚</th><th>DPS004</th><th>ARP-洛杉矶</th><th>ARP-休斯顿</th><th>ARP-亚特兰大（待上架）</th><th>库存合计</th><th>安全线</th><th>规则来源</th><th></th></tr></thead><tbody id="inventory-threshold-rows"></tbody></table>
               <div class="empty" id="inventory-threshold-empty" hidden><svg><use href="#i-warehouse"/></svg><strong>没有可配置的 SKU</strong><span>仓库 SKU 同步后会显示在这里</span></div>
             </div>
             <div class="pager" id="inventory-threshold-pager" hidden></div>
@@ -303,10 +303,10 @@
         <div class="order-summary" id="order-summary"></div>
         <section class="warehouse-check" id="warehouse-check">
           <div class="warehouse-check-head"><div><small>领星实时库存</small><h3 id="warehouse-check-title">正在连接领星 Go 服务</h3></div><button class="icon-button" id="refresh-warehouse-preview" type="button" title="重新查询库存" aria-label="重新查询库存"><svg><use href="#i-refresh"/></svg></button></div>
-          <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP美东、DPS004、ARP美西</small></div></div>
+          <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP-宾夕法尼亚、DPS004、ARP-洛杉矶、ARP-休斯顿</small></div></div>
           <div id="inventory-matrix" hidden>
             <div class="inventory-meta"><span id="inventory-rule">安全线</span><span id="inventory-time">查询时间</span></div>
-            <div class="inventory-table"><table><thead><tr><th>SKU / 需发</th><th>DPS002</th><th>ARP美东</th><th>DPS004</th><th>ARP美西（空置）</th><th>规则结论</th></tr></thead><tbody id="inventory-preview-rows"></tbody></table></div>
+            <div class="inventory-table"><table><thead><tr><th>SKU / 需发</th><th>DPS002</th><th>ARP-宾夕法尼亚</th><th>DPS004</th><th>ARP-洛杉矶</th><th>ARP-休斯顿</th><th>ARP-亚特兰大（待上架）</th><th>规则结论</th></tr></thead><tbody id="inventory-preview-rows"></tbody></table></div>
             <div class="warehouse-region-options" id="warehouse-region-options"></div>
             <button class="secondary-button mapping-link" id="open-warehouse-mappings" type="button" hidden>配置仓库映射</button>
           </div>

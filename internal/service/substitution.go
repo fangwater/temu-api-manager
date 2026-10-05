@@ -574,7 +574,7 @@ func (s *Service) quoteSubstitutionOption(ctx context.Context, order model.Order
 	problems := make([]error, 0)
 	candidates := make([]substitutionPriceCandidate, 0)
 	pairingByAccount := make(map[string]inventory.ProductPairingValidation)
-	for _, key := range supportedOMSWarehouseKeys {
+	for _, key := range decisionWarehouseKeys(decision, "auto") {
 		selection, err := selectWarehouseForPriceComparison(decision, quantities, key)
 		if err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", key, err))
@@ -794,15 +794,11 @@ func selectWarehouseForPriceComparison(decision inventory.DecisionResponse, quan
 			return inventory.Selection{}, fmt.Errorf("库存查询没有返回组合 SKU %s，禁止从仓库 %s 发货", sku, warehouseKey)
 		}
 		var selected *inventory.Warehouse
-		for _, currentRegion := range record.Regions {
-			if currentRegion.Region != region {
-				continue
-			}
-			for index := range currentRegion.Warehouses {
-				if currentRegion.Warehouses[index].Key == warehouseKey {
-					selected = &currentRegion.Warehouses[index]
-					break
-				}
+		candidates := record.Candidates()
+		for i := range candidates {
+			if candidates[i].Key == warehouseKey {
+				selected = &candidates[i]
+				break
 			}
 		}
 		if selected == nil || !selected.Selectable || selected.Available < float64(required) {

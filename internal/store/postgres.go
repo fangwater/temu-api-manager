@@ -396,6 +396,10 @@ warehouse_id=EXCLUDED.warehouse_id,synced_at=now()
 func logicalWarehouseKey(item model.Warehouse) string {
 	name := strings.ToUpper(strings.TrimSpace(item.Name + " " + item.ID))
 	switch {
+	case strings.Contains(name, "ARP06A") || item.ID == "WH-10610323701891516" || item.ID == "WH-10610247352452545":
+		return "ARP_HOUSTON"
+	case strings.Contains(name, "ARPGA"):
+		return "ARP_ATLANTA"
 	case strings.Contains(name, "DPSNY002") || strings.Contains(name, "DPS002"):
 		return "DPS002"
 	case strings.Contains(name, "DPSCA004") || strings.Contains(name, "DPS004"):
@@ -442,7 +446,7 @@ ORDER BY w.warehouse_name
 	}
 	mrows, err := p.pool.Query(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.enabled,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,(m.enabled AND (m.oms_warehouse_key NOT IN ('ARP_HOUSTON','ARP_ATLANTA') OR sw.warehouse_id IS NOT NULL)),m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$1 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -501,7 +505,7 @@ func (p *Postgres) WarehouseMapping(ctx context.Context, omsKey string) (model.W
 	var m model.WarehouseMapping
 	err := p.pool.QueryRow(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
-coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,m.enabled,m.updated_at
+coalesce(resolved.warehouse_name,canonical.warehouse_name,''),m.oms_warehouse_code,(m.enabled AND (m.oms_warehouse_key NOT IN ('ARP_HOUSTON','ARP_ATLANTA') OR sw.warehouse_id IS NOT NULL)),m.updated_at
 FROM public.temu_warehouse_mappings m
 LEFT JOIN public.temu_shop_warehouses sw
 ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
@@ -526,6 +530,7 @@ ON sw.shop_code=$2 AND sw.logical_warehouse_key=m.logical_warehouse_key
 JOIN public.temu_warehouses w ON w.warehouse_id=coalesce(sw.warehouse_id,m.temu_warehouse_id)
 WHERE m.oms_warehouse_key=$1
 AND m.enabled
+AND (m.oms_warehouse_key NOT IN ('ARP_HOUSTON','ARP_ATLANTA') OR sw.warehouse_id IS NOT NULL)
 `, strings.ToUpper(strings.TrimSpace(omsKey)), p.shopCode).Scan(&w.ID, &w.Name, &w.RegionID, &w.EnableBuyShippingLabel, &w.Default, &w.ManagementType, &w.SyncedAt)
 	return w, err
 }

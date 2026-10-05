@@ -465,9 +465,8 @@ func warehouseClassificationFromDecision(order model.Order, decision inventory.D
 	}
 	if !inventoryManual && len(unboundSKUs) == 0 && decisionHasPlatformSKUWarehouseRestrictions(decision) {
 		quantities, _ := warehouseQuantities(order)
-		_, eastErr := inventory.SelectWarehouse(decision, "east", quantities)
-		_, westErr := inventory.SelectWarehouse(decision, "west", quantities)
-		if eastErr != nil && westErr != nil {
+		_, selectErr := inventory.SelectWarehouse(decision, "auto", quantities)
+		if selectErr != nil {
 			item.Categories = append(item.Categories, manualReasonSKUWarehousePolicy)
 			item.ReasonDetails = append(item.ReasonDetails,
 				"Temu 平台的 SKU 发货仓库规则未保留可覆盖订单全部商品的仓库")
@@ -662,7 +661,7 @@ func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) err
 	return s.store.DeleteWarehouseMapping(ctx, omsKey)
 }
 
-var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
+var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}
 
 func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU string) (map[string]model.WarehouseCarrierPolicies, error) {
 	groups, err := s.inventory.CarrierPolicies(ctx, "temu", warehouseSKU)
@@ -687,12 +686,13 @@ func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU s
 		if rules.WarehouseKey == "" {
 			return nil, fmt.Errorf("XLWMS did not return base carrier rules for %s", group.WarehouseKey)
 		}
-		result[group.WarehouseKey] = model.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, BaseRules: rules, Carriers: policies}
+		result[group.WarehouseKey] = model.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, WarehouseEnabled: group.WarehouseEnabled, BaseRules: rules, Carriers: policies}
 	}
 	return result, nil
 }
 
 func decisionHasPlatformSKUWarehouseRestrictions(decision inventory.DecisionResponse) bool {
+	decision = inventory.WithCandidateRegions(decision)
 	for _, record := range decision.Records {
 		for _, region := range record.Regions {
 			for _, warehouse := range region.Warehouses {
@@ -835,12 +835,9 @@ func (s *Service) previewWarehouses(ctx context.Context, parent, recoveryShipmen
 	preview.RequiresManual = classification.Status == "manual"
 	preview.ManualCategories = append(preview.ManualCategories, classification.Categories...)
 	preview.ManualReasons = append(preview.ManualReasons, classification.ReasonDetails...)
-	for _, region := range []string{"east", "west"} {
-		regionName := map[string]string{"east": "美东", "west": "美西"}[region]
-		keys := []string{"DPS002", "ARP_EAST"}
-		if region == "west" {
-			keys = []string{"DPS004", "ARP_WEST"}
-		}
+	for _, region := range []string{"east", "west", "central"} {
+		regionName := map[string]string{"east": "东部", "west": "西部", "central": "中部"}[region]
+		keys := decisionWarehouseKeys(decision, region)
 		defaultSelection, defaultErr := inventory.SelectWarehouse(decision, region, quantities)
 		for _, key := range keys {
 			option := WarehouseRegionPreview{Region: region, RegionName: regionName, WarehouseKey: key, WarehouseName: key}
@@ -965,6 +962,9 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 	}
 
 	warehouseKeys, err := quoteWarehouseKeys(request.Region, request.WarehouseKey)
+	if err == nil && request.WarehouseKey == "" {
+		warehouseKeys = decisionWarehouseKeys(decision, request.Region)
+	}
 	if err != nil {
 		return QuoteResult{}, err
 	}
@@ -1145,13 +1145,15 @@ func quoteWarehouseKeys(region, preferred string) ([]string, error) {
 	}
 	switch region {
 	case "east":
-		return []string{"DPS002", "ARP_EAST"}, nil
+		return []string{"DPS002", "ARP_EAST", "ARP_ATLANTA"}, nil
 	case "west":
 		return []string{"DPS004", "ARP_WEST"}, nil
+	case "central":
+		return []string{"ARP_HOUSTON"}, nil
 	case "auto", "":
-		return []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}, nil
+		return []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}, nil
 	default:
-		return nil, errors.New("region must be east, west, or auto")
+		return nil, errors.New("region must be east, west, central, or auto")
 	}
 }
 
@@ -1173,10 +1175,12 @@ func filterWarehouseKeys(keys, excluded []string) []string {
 
 func warehouseRegion(key string) string {
 	switch strings.ToUpper(strings.TrimSpace(key)) {
-	case "DPS002", "ARP_EAST":
+	case "DPS002", "ARP_EAST", "ARP_ATLANTA":
 		return "east"
 	case "DPS004", "ARP_WEST":
 		return "west"
+	case "ARP_HOUSTON":
+		return "central"
 	default:
 		return ""
 	}
@@ -1486,6 +1490,9 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	} else if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
 		return PurchaseResult{}, err
 	}
+	if err := s.validateStoredQuoteCarrier(ctx, order, quote, saved); err != nil {
+		return PurchaseResult{}, err
+	}
 	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel, storedQuoteAllowsSignature(saved))
 	if err != nil {
 		return PurchaseResult{}, err
@@ -1560,6 +1567,7 @@ func (s *Service) reserveFulfillmentInventory(ctx context.Context, order model.O
 }
 
 func fulfillmentInventoryReservationRequest(platform, shopCode, orderKey string, selection inventory.Selection, quantities map[string]int) (inventory.FulfillmentInventoryReservationRequest, error) {
+	selection.Decision = inventory.WithCandidateRegions(selection.Decision)
 	warehouseKey := strings.ToUpper(strings.TrimSpace(selection.WarehouseKey))
 	warehouseCode := ""
 	availableBySKU := make(map[string]int, len(quantities))
@@ -1740,6 +1748,9 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 	}
 	if saved.RecoveryShipmentID != shipment.ID {
 		return PurchaseResult{}, errors.New("quote was not created for this shipment recovery")
+	}
+	if err := s.validateStoredQuoteCarrier(ctx, order, quote, saved); err != nil {
+		return PurchaseResult{}, err
 	}
 	request, err := shipmentCreateRequest(order, quote, saved.Package, saved.SelectedChannel, storedQuoteAllowsSignature(saved))
 	if err != nil {
@@ -3013,6 +3024,7 @@ func validatePackage(spec model.PackageSpec) error {
 }
 
 func inventoryUnboundSKUs(decision inventory.DecisionResponse) []string {
+	decision = inventory.WithCandidateRegions(decision)
 	result := make([]string, 0)
 	for _, record := range decision.Records {
 		activeWarehouses := 0
@@ -3204,4 +3216,53 @@ func humanDuration(seconds int64) string {
 		return fmt.Sprintf("%d小时%d分钟", hours, (seconds%3600)/60)
 	}
 	return fmt.Sprintf("%d分钟", seconds/60)
+}
+
+func decisionWarehouseKeys(decision inventory.DecisionResponse, region string) []string {
+	keys := []string{}
+	if len(decision.Records) == 0 {
+		return keys
+	}
+	for _, w := range decision.Records[0].Candidates() {
+		if region == "" || region == "auto" || w.Region == region {
+			keys = append(keys, w.Key)
+		}
+	}
+	return keys
+}
+
+func (s *Service) validateStoredQuoteCarrier(ctx context.Context, order model.Order, quote model.Quote, saved storedQuoteRequest) error {
+	channel := saved.SelectedChannel
+	if channel.ChannelID != quote.ChannelID || channel.ShipCompanyID != quote.ShipCompanyID {
+		return errors.New("stored quote carrier does not match selected channel")
+	}
+	skus := []string{}
+	if saved.Substitution != nil {
+		for sku := range saved.Substitution.Quantities {
+			skus = append(skus, sku)
+		}
+	} else {
+		for _, line := range order.Lines {
+			skus = append(skus, line.ExtCode)
+		}
+	}
+	if len(skus) == 0 {
+		return errors.New("cannot verify carrier policy without warehouse SKUs")
+	}
+	for _, sku := range skus {
+		policies, err := s.carrierPoliciesByWarehouse(ctx, sku)
+		if err != nil {
+			return err
+		}
+		group, ok := policies[quote.OMSWarehouseKey]
+		if !ok || (group.WarehouseEnabled != nil && !*group.WarehouseEnabled) {
+			return errors.New("selected warehouse is not enabled")
+		}
+		allowed, _ := filterAutomaticChannels([]temu.ShippingChannel{channel}, group.BaseRules)
+		allowed, _ = filterChannelsByCarrierPolicy(allowed, quote.OMSWarehouseKey, group.Carriers)
+		if len(allowed) == 0 {
+			return errors.New("selected carrier is no longer allowed; request a new quote")
+		}
+	}
+	return nil
 }

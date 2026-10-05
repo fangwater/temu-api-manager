@@ -919,9 +919,11 @@ async function loadWarehouses(sync = false) {
 
 const omsWarehouses = [
   { key: "DPS002", name: "DPS002", region: "美东", code: "DPSNY002" },
-  { key: "ARP_EAST", name: "ARP美东", region: "美东", code: "HYTX30" },
+  { key: "ARP_EAST", name: "ARP-宾夕法尼亚", region: "美东", code: "HYTX30" },
   { key: "DPS004", name: "DPS004", region: "美西", code: "DPSCA004" },
-  { key: "ARP_WEST", name: "ARP美西", region: "美西", code: "ARPCA01" },
+  { key: "ARP_WEST", name: "ARP-洛杉矶", region: "西部", code: "ARPCA01" },
+ {key:"ARP_HOUSTON",name:"ARP-休斯顿",region:"中部",code:"ARP06A"},
+ {key:"ARP_ATLANTA",name:"ARP-亚特兰大（待上架）",region:"东部",code:"ARPGA",disabled:true},
 ];
 
 const omsAccounts = [
@@ -949,6 +951,7 @@ function renderWarehouses() {
 }
 
 function inventoryThresholdSource(item) {
+  if (item.source === "oms_account") return "OMS 账户规则";
   if (item.source === "platform_sku" || item.customized) return "Temu SKU 单独设置";
   return "Temu 平台默认";
 }
@@ -976,15 +979,14 @@ function renderInventoryThresholds() {
   $("#inventory-threshold-rows").innerHTML = state.inventoryThresholds.map((item) => `
     <tr data-threshold-sku="${escapeHtml(item.warehouse_sku)}">
       <td><div class="sku-rule-identity"><code>${escapeHtml(item.warehouse_sku)}</code><span>${escapeHtml(item.product_name || "未记录商品名称")}</span></div></td>
-      <td>${escapeHtml(item.east_available)}</td>
-      <td>${escapeHtml(item.west_available)}</td>
+      ${omsWarehouses.map((warehouse) => `<td>${warehouse.disabled ? "待上架" : item.inventory_at ? escapeHtml(item.warehouse_available?.[warehouse.code] ?? 0) : "-"}</td>`).join("")}
       <td>${escapeHtml(item.total_available)}</td>
-      <td><input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="${escapeHtml(item.total_threshold)}"></td>
+      <td>${item.total_inclusive ? "≤" : "<"} <input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="${escapeHtml(item.total_threshold)}" ${item.source === "oms_account" ? "disabled" : ""}></td>
       <td><span class="status-badge ${item.customized ? "pending" : "neutral"}">${escapeHtml(inventoryThresholdSource(item))}</span></td>
       <td>
         <div class="manual-actions">
-          <button class="secondary-button sku-rule-save" data-save-threshold="${escapeHtml(item.warehouse_sku)}"><svg><use href="#i-check"/></svg>保存</button>
-          ${item.customized ? `<button class="secondary-button" data-reset-threshold="${escapeHtml(item.warehouse_sku)}">恢复</button>` : ""}
+          <button class="secondary-button sku-rule-save" data-save-threshold="${escapeHtml(item.warehouse_sku)}" ${item.source === "oms_account" ? "disabled" : ""}><svg><use href="#i-check"/></svg>保存</button>
+          ${item.customized && item.source !== "oms_account" ? `<button class="secondary-button" data-reset-threshold="${escapeHtml(item.warehouse_sku)}">恢复</button>` : ""}
         </div>
       </td>
     </tr>
@@ -1157,6 +1159,7 @@ async function loadWarehousePreview(parentOrderSN = state.currentOrder?.parent_o
 }
 
 function inventoryWarehouse(record, key) {
+  const direct=(record.warehouses || []).find((item)=>item.warehouse_key===key);if(direct) return direct;
   for (const region of record.regions || []) {
     const warehouse = (region.warehouses || []).find((item) => item.warehouse_key === key);
     if (warehouse) return warehouse;
@@ -1203,6 +1206,7 @@ function regionDecisionItems(option) {
     return [{ tone: "blocked", text: option.error || "该区域没有可覆盖整单的仓库" }];
   }
 
+  if (["ARP_HOUSTON","ARP_ATLANTA"].includes(option.warehouse_key)) return [{tone:option.ready ? "ready":"blocked",text:option.reason || option.error || "等待仓库上架及映射配置"}];
   const dpsKey = option.region === "east" ? "DPS002" : "DPS004";
   const arpKey = option.region === "east" ? "ARP_EAST" : "ARP_WEST";
   const dpsName = previewWarehouse(dpsKey)?.warehouse_name || dpsKey;
@@ -1318,7 +1322,7 @@ function renderWarehousePreview() {
     const manualReasons = (record.regions || []).filter((region) => region.requires_manual).map((region) => `${region.region_name}：${region.reason}`);
     const conclusion = record.requires_manual
       ? `<span class="inventory-conclusion blocked"><strong>转人工</strong><small>${escapeHtml(manualReasons.join("；") || record.reason)}</small></span>`
-      : '<span class="inventory-conclusion ready"><strong>自动选仓可用</strong><small>东西区域库存均高于安全线</small></span>';
+      : '<span class="inventory-conclusion ready"><strong>自动选仓可用</strong><small>可发库存合计通过安全线</small></span>';
     const thresholds = record.thresholds || defaults;
     return `<tr>
       <td><div class="order-id"><strong>${escapeHtml(record.sku)}</strong><small>需发 ${preview.quantities?.[record.sku] ?? 0} · 安全线 东${thresholds.east_threshold} / 西${thresholds.west_threshold} / 总${thresholds.total_threshold}</small></div></td>
@@ -1326,6 +1330,8 @@ function renderWarehousePreview() {
       <td>${stockCell(inventoryWarehouse(record, "ARP_EAST"))}</td>
       <td>${stockCell(inventoryWarehouse(record, "DPS004"))}</td>
       <td>${stockCell(inventoryWarehouse(record, "ARP_WEST"))}</td>
+ <td>${stockCell(inventoryWarehouse(record, "ARP_HOUSTON"))}</td>
+ <td>${stockCell(inventoryWarehouse(record, "ARP_ATLANTA"))}</td>
       <td>${conclusion}</td>
     </tr>`;
   }).join("");

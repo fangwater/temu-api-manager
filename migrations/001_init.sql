@@ -449,3 +449,19 @@ CREATE TABLE IF NOT EXISTS temu_bulk_inventory_reservations (
 
 CREATE INDEX IF NOT EXISTS temu_bulk_inventory_reservations_order_idx
     ON temu_bulk_inventory_reservations(parent_order_sn, batch_id);
+
+
+-- Confirmed aliases of ARP06A, registered separately by Panda Homes/Panda Buy.
+-- A collection warehouse needs a registration for the current shop.
+UPDATE public.temu_shop_warehouses sw SET logical_warehouse_key='ARP_HOUSTON'
+FROM public.temu_warehouses w WHERE sw.warehouse_id=w.warehouse_id
+AND ((w.warehouse_id='WH-10610323701891516' AND w.warehouse_name='ARP-休斯顿6号仓')
+ OR (w.warehouse_id='WH-10610247352452545' AND w.warehouse_name='ARP-休斯顿仓库'))
+AND sw.logical_warehouse_key IN ('TEMU_WH-10610323701891516','TEMU_WH-10610247352452545')
+AND NOT EXISTS(SELECT 1 FROM public.temu_shop_warehouses existing WHERE existing.shop_code=sw.shop_code AND existing.logical_warehouse_key='ARP_HOUSTON');
+INSERT INTO public.temu_warehouse_mappings(oms_warehouse_key,temu_warehouse_id,oms_warehouse_code,logical_warehouse_key,enabled)
+SELECT 'ARP_HOUSTON',warehouse_id,'ARP06A','ARP_HOUSTON',true FROM public.temu_warehouses
+WHERE ((warehouse_id='WH-10610323701891516' AND warehouse_name='ARP-休斯顿6号仓')
+ OR (warehouse_id='WH-10610247352452545' AND warehouse_name='ARP-休斯顿仓库')) AND enable_buy_shipping_label
+ORDER BY CASE warehouse_id WHEN 'WH-10610323701891516' THEN 0 ELSE 1 END LIMIT 1
+ON CONFLICT(oms_warehouse_key) DO NOTHING;

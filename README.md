@@ -106,27 +106,21 @@ instead of approving the order twice. A successful assignment marker is stored
 in the OMS reconciliation summary so a delayed XLWMS status update does not
 cause another submission.
 
-## Shop SKU Warehouse Rules
+## Platform SKU Warehouse Rules
 
-SKU warehouse restrictions belong to a Temu shop, not to a warehouse. The
-shared `public.temu_sku_disabled_warehouses` table uses
-`(shop_code, warehouse_sku, oms_warehouse_key)` as its primary key. It stores
-only disabled combinations:
+SKU warehouse restrictions are managed centrally by XLWMS at platform/SKU scope
+in `xlwms_platform_sku_disabled_warehouses`. The dashboard links to the XLWMS
+SKU shipping rules page. The central endpoints are
+`GET /v1/fulfillment-policies/skus` and
+`PATCH /v1/fulfillment-policies/skus/{warehouseSKU}` with `platform=temu`.
+No disabled rows means the SKU can use each enabled warehouse within its actual
+credential and inventory scope. An empty disabled list restores the default.
 
-- No rows for a shop and SKU means every globally enabled OMS warehouse is
-  allowed.
-- One or more rows disable only those warehouses for that SKU in that shop.
-- Saving an empty disabled list deletes the rows and restores the default.
-
-The dashboard exposes the rules under **SKU 发货仓库**. The HTTP endpoints are
-`GET /api/sku-warehouse-rules` and `PUT /api/sku-warehouse-rules`; normal
-multi-shop routing selects the shop through `X-Temu-Shop`.
-
-The service applies the restrictions after each live XLWMS inventory decision,
-so warehouse preview, manual quotes, and automatic fulfillment share the same
-selection behavior. It also checks the current rule again immediately before a
-new Buy Label or failed-shipment recovery submission. Updating a rule
-invalidates cached warehouse classifications for orders containing that SKU.
+Warehouse preview, manual quotes and automatic fulfillment consume the same
+XLWMS decision. Immediately before a new Buy Label or failed-shipment recovery,
+the service checks current SKU restrictions and the saved channel against the
+current warehouse carrier capability. The pending Atlanta registration remains
+disabled independently of SKU rules.
 
 ## Label Purchase Price Analysis
 
@@ -209,8 +203,9 @@ warehouses.
    necessarily that Temu successfully produced a label. Join
    `temu_shipments.status` through `shipment_id` to analyze outcomes.
 5. Historical quotes and shipments are not backfilled because their complete
-   cross-warehouse candidate set cannot be reconstructed. Legacy quotes remain
-   purchasable but do not create fabricated analysis rows.
+   cross-warehouse candidate set cannot be reconstructed. Legacy quotes that still have a trusted selected-channel snapshot and pass
+   current inventory, warehouse and carrier checks remain purchasable without
+   fabricated analysis rows.
 
 Example price-premium query for the current shop schema:
 
@@ -319,3 +314,21 @@ python -m temu_api_manager baseprice-recommend \
 
 The command validates the top-level request shape and signs nested arrays and
 objects using Temu's compact JSON serialization rules.
+
+## ARP physical warehouses
+
+ARP warehouse display names are ARP-宾夕法尼亚 (`ARP_EAST`/`HYTX30`),
+ARP-洛杉矶 (`ARP_WEST`/`ARPCA01`), ARP-休斯顿 (`ARP_HOUSTON`/`ARP06A`),
+and ARP-亚特兰大 (`ARP_ATLANTA`/`ARPGA`, reserved until listed).
+Automatic quotes compare every eligible physical warehouse returned by XLWMS;
+geography is an optional filter. Existing regional responses remain readable.
+
+Houston and Atlanta accept only USPS, GOFO, UPS and FEDEX. Quotes use XLWMS's
+final capability limits and label purchase checks the saved channel against
+current rules for every order SKU. Purchased shipment lookup includes the
+actual shipping company so XLWMS can validate it before OMS approval.
+
+Houston's verified Panda Homes and Panda Buy warehouse IDs resolve independently
+through the shared logical mapping. A shop without a registration cannot quote
+a collection warehouse using another shop's address. Atlanta is disabled in the
+XLWMS fulfillment registry; add its actual shop registrations only after listing.

@@ -70,6 +70,7 @@ type SKUDecision struct {
 	Reason               string              `json:"reason"`
 	TotalAvailableAmount float64             `json:"total_available_amount"`
 	Thresholds           InventoryThresholds `json:"thresholds"`
+	Warehouses           []Warehouse         `json:"warehouses"`
 	Regions              []Region            `json:"regions"`
 }
 type PackageResolutionItem struct {
@@ -472,18 +473,21 @@ type PlatformInventoryThresholds struct {
 }
 
 type SKUInventoryThreshold struct {
-	WarehouseSKU   string     `json:"warehouse_sku"`
-	ProductName    string     `json:"product_name"`
-	EastAvailable  float64    `json:"east_available"`
-	WestAvailable  float64    `json:"west_available"`
-	TotalAvailable float64    `json:"total_available"`
-	EastThreshold  float64    `json:"east_threshold"`
-	WestThreshold  float64    `json:"west_threshold"`
-	TotalThreshold float64    `json:"total_threshold"`
-	Customized     bool       `json:"customized"`
-	Source         string     `json:"source,omitempty"`
-	InventoryAt    *time.Time `json:"inventory_at,omitempty"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	WarehouseSKU       string             `json:"warehouse_sku"`
+	ProductName        string             `json:"product_name"`
+	WarehouseAvailable map[string]float64 `json:"warehouse_available"`
+	EastAvailable      float64            `json:"east_available"`
+	WestAvailable      float64            `json:"west_available"`
+	TotalAvailable     float64            `json:"total_available"`
+	EastThreshold      float64            `json:"east_threshold"`
+	WestThreshold      float64            `json:"west_threshold"`
+	TotalThreshold     float64            `json:"total_threshold"`
+	TotalInclusive     bool               `json:"total_inclusive"`
+	WarehouseCodes     []string           `json:"warehouse_codes,omitempty"`
+	Customized         bool               `json:"customized"`
+	Source             string             `json:"source,omitempty"`
+	InventoryAt        *time.Time         `json:"inventory_at,omitempty"`
+	UpdatedAt          time.Time          `json:"updated_at"`
 }
 
 type InventoryThresholdPage struct {
@@ -513,12 +517,13 @@ type WarehouseCarrierRules struct {
 }
 
 type WarehouseCarrierPolicies struct {
-	WarehouseKey string                `json:"warehouse_key"`
-	WarehouseSKU string                `json:"warehouse_sku,omitempty"`
-	Customized   bool                  `json:"customized"`
-	Source       string                `json:"source"`
-	BaseRules    WarehouseCarrierRules `json:"base_rules"`
-	Carriers     []CarrierPolicy       `json:"carriers"`
+	WarehouseEnabled *bool                 `json:"warehouse_enabled,omitempty"`
+	WarehouseKey     string                `json:"warehouse_key"`
+	WarehouseSKU     string                `json:"warehouse_sku,omitempty"`
+	Customized       bool                  `json:"customized"`
+	Source           string                `json:"source"`
+	BaseRules        WarehouseCarrierRules `json:"base_rules"`
+	Carriers         []CarrierPolicy       `json:"carriers"`
 }
 
 func (c *Client) CarrierPolicies(ctx context.Context, platform, warehouseSKU string) ([]WarehouseCarrierPolicies, error) {
@@ -770,83 +775,113 @@ type Selection struct {
 	Decision      DecisionResponse `json:"decision"`
 }
 
+// Candidates prefers the flat physical warehouse result and accepts older responses.
+func (record SKUDecision) Candidates() []Warehouse {
+	if record.Warehouses != nil {
+		return record.Warehouses
+	}
+	out := []Warehouse{}
+	for _, region := range record.Regions {
+		for _, w := range region.Warehouses {
+			if w.Region == "" {
+				w.Region = region.Region
+			}
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
 func SelectWarehouse(decision DecisionResponse, region string, quantities map[string]int, preferredWarehouseKeys ...string) (Selection, error) {
 	region = strings.ToLower(strings.TrimSpace(region))
-	if region != "east" && region != "west" {
-		return Selection{}, errors.New("region must be east or west")
+	if region != "" && region != "auto" && region != "east" && region != "west" && region != "central" {
+		return Selection{}, errors.New("unknown geographic filter")
 	}
+	if len(quantities) == 0 {
+		return Selection{}, errors.New("no warehouse SKUs to select")
+	}
+	records := map[string]SKUDecision{}
 	for _, record := range decision.Records {
-		if !record.RequiresManual {
+		records[record.SKU] = record
+	}
+	var preference []string
+	names := map[string]string{}
+	regions := map[string]string{}
+	if len(decision.Records) > 0 {
+		for _, w := range decision.Records[0].Candidates() {
+			if region == "" || region == "auto" || w.Region == region {
+				preference = append(preference, w.Key)
+				names[w.Key] = w.Name
+				regions[w.Key] = w.Region
+			}
+		}
+	}
+	manual := len(preferredWarehouseKeys) > 0 && strings.TrimSpace(preferredWarehouseKeys[0]) != ""
+	if manual {
+		key := strings.ToUpper(strings.TrimSpace(preferredWarehouseKeys[0]))
+		found := false
+		for _, v := range preference {
+			found = found || v == key
+		}
+		if !found {
+			return Selection{}, fmt.Errorf("warehouse %s is unavailable for this selection", key)
+		}
+		preference = []string{key}
+	}
+	for sku := range quantities {
+		record, ok := records[sku]
+		if !ok {
+			return Selection{}, fmt.Errorf("inventory response missing SKU %s", sku)
+		}
+		if record.RequiresManual {
+			return Selection{}, fmt.Errorf("SKU %s requires manual review: %s", sku, record.Reason)
+		}
+	}
+	for _, key := range preference {
+		eligible := true
+		for sku, quantity := range quantities {
+			found := false
+			for _, w := range records[sku].Candidates() {
+				if w.Key == key {
+					found = w.Selectable && w.Available >= float64(quantity)
+				}
+			}
+			eligible = eligible && found
+		}
+		if eligible {
+			reason := "该仓库可独立覆盖订单内全部SKU"
+			if manual {
+				reason += "，使用人工选择的仓库"
+			}
+			return Selection{Region: regions[key], WarehouseKey: key, WarehouseName: names[key], Reason: reason, Decision: decision}, nil
+		}
+	}
+	return Selection{}, errors.New("没有一个可选仓库能够覆盖订单内全部SKU，转人工处理")
+}
+
+func WithCandidateRegions(decision DecisionResponse) DecisionResponse {
+	decision.Records = append([]SKUDecision(nil), decision.Records...)
+	for i := range decision.Records {
+		record := &decision.Records[i]
+		if record.Warehouses == nil {
 			continue
 		}
-		reasons := make([]string, 0, len(record.Regions))
-		for _, current := range record.Regions {
-			if current.RequiresManual {
-				reasons = append(reasons, current.Reason)
+		regions := []Region{}
+		for _, w := range record.Warehouses {
+			found := -1
+			for j := range regions {
+				if regions[j].Region == w.Region {
+					found = j
+					break
+				}
 			}
-		}
-		return Selection{}, fmt.Errorf("SKU %s requires manual review: %s", record.SKU, strings.Join(reasons, "；"))
-	}
-	preference := []string{"DPS002", "ARP_EAST"}
-	if region == "west" {
-		preference = []string{"DPS004", "ARP_WEST"}
-	}
-	manualSelection := false
-	if len(preferredWarehouseKeys) > 0 && strings.TrimSpace(preferredWarehouseKeys[0]) != "" {
-		requested := strings.ToUpper(strings.TrimSpace(preferredWarehouseKeys[0]))
-		if requested != preference[0] && requested != preference[1] {
-			return Selection{}, fmt.Errorf("warehouse %s does not belong to region %s", requested, region)
-		}
-		preference = []string{requested}
-		manualSelection = true
-	}
-	eligible := make(map[string]bool, len(preference))
-	for _, key := range preference {
-		eligible[key] = true
-	}
-	names := make(map[string]string)
-	for _, record := range decision.Records {
-		var current *Region
-		for i := range record.Regions {
-			if record.Regions[i].Region == region {
-				current = &record.Regions[i]
-				break
+			if found < 0 {
+				regions = append(regions, Region{Region: w.Region})
+				found = len(regions) - 1
 			}
+			regions[found].Warehouses = append(regions[found].Warehouses, w)
 		}
-		if current == nil {
-			return Selection{}, fmt.Errorf("SKU %s has no %s inventory decision", record.SKU, region)
-		}
-		if current.RequiresManual {
-			return Selection{}, fmt.Errorf("SKU %s requires manual review: %s", record.SKU, current.Reason)
-		}
-		available := make(map[string]Warehouse, len(current.Warehouses))
-		for _, warehouse := range current.Warehouses {
-			available[warehouse.Key] = warehouse
-			names[warehouse.Key] = warehouse.Name
-		}
-		for _, key := range preference {
-			warehouse, ok := available[key]
-			if !ok || !warehouse.Selectable || warehouse.Available < float64(quantities[record.SKU]) {
-				eligible[key] = false
-			}
-		}
+		record.Regions = regions
 	}
-	for _, key := range preference {
-		if eligible[key] {
-			reason := "该仓库可独立覆盖订单内全部SKU"
-			switch {
-			case manualSelection:
-				reason += "，使用人工选择的仓库"
-			case strings.HasPrefix(key, "DPS"):
-				reason += "，按规则默认优先选择DPS仓清理库存"
-			default:
-				reason += "，DPS仓不能覆盖全部SKU，默认回退ARP仓"
-			}
-			return Selection{Region: region, WarehouseKey: key, WarehouseName: names[key], Reason: reason, Decision: decision}, nil
-		}
-	}
-	if manualSelection {
-		return Selection{}, fmt.Errorf("选择的仓库 %s 不能覆盖订单内全部SKU", preference[0])
-	}
-	return Selection{}, errors.New("该区域没有一个仓库能够覆盖订单内全部SKU，转人工处理")
+	return decision
 }

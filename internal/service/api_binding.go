@@ -9,6 +9,7 @@ import (
 
 // Resolve each candidate warehouse from the API scope used for its SKU inventory.
 func fulfillmentAccountForWarehouse(decision inventory.DecisionResponse, warehouseKey string) (string, error) {
+	decision = inventory.WithCandidateRegions(decision)
 	if len(decision.Records) == 0 {
 		return "", errors.New("缺少 SKU 库存与 API 绑定信息")
 	}

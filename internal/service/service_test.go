@@ -573,7 +573,7 @@ func TestQuoteWarehouseKeysAutoIncludesAllBusinessWarehousesInOrder(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST"}
+	want := []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}

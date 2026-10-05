@@ -185,9 +185,10 @@ type WarehouseCarrierRules struct {
 }
 
 type WarehouseCarrierPolicies struct {
-	WarehouseKey string
-	BaseRules    WarehouseCarrierRules
-	Carriers     []CarrierPolicy
+	WarehouseEnabled *bool `json:"warehouse_enabled,omitempty"`
+	WarehouseKey     string
+	BaseRules        WarehouseCarrierRules
+	Carriers         []CarrierPolicy
 }
 
 type ShipmentPOGroup struct {
