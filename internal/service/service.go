@@ -895,6 +895,7 @@ type QuoteResult struct {
 }
 
 type storedQuoteRequest struct {
+	BindingRevision    int64                     `json:"binding_revision,omitempty"`
 	Package            model.PackageSpec         `json:"package"`
 	ShippingRequest    map[string]any            `json:"shipping_request"`
 	SelectedChannel    temu.ShippingChannel      `json:"selected_channel"`
@@ -1097,7 +1098,7 @@ func (s *Service) Quote(ctx context.Context, request QuoteRequest) (QuoteResult,
 		}
 	}
 	requestRecord, _ := json.Marshal(storedQuoteRequest{
-		Package: packageSpec, ShippingRequest: selectedResult.shippingRequest, SelectedChannel: choice.channel,
+		Package: packageSpec, ShippingRequest: selectedResult.shippingRequest, SelectedChannel: choice.channel, BindingRevision: selectedResult.warehouse.BindingRevision,
 		RecoveryShipmentID: request.RecoveryShipmentID, ChoiceAnalysis: choiceAnalysis,
 	})
 	responseRecord, _ := json.Marshal(map[string]any{"temu_raw": json.RawMessage(selectedResult.raw), "available": selectedResult.channels.Available, "unavailable": selectedResult.channels.Unavailable})
@@ -1490,6 +1491,9 @@ func (s *Service) Purchase(ctx context.Context, quoteID string) (PurchaseResult,
 	} else if err := s.validateOrderWarehouseAllowed(ctx, order, quote.OMSWarehouseKey); err != nil {
 		return PurchaseResult{}, err
 	}
+	if err := s.validateCurrentWarehouseBinding(ctx, quote, saved); err != nil {
+		return PurchaseResult{}, err
+	}
 	if err := s.validateStoredQuoteCarrier(ctx, order, quote, saved); err != nil {
 		return PurchaseResult{}, err
 	}
@@ -1749,6 +1753,9 @@ func (s *Service) RecoverFailedShipment(ctx context.Context, shipmentID, quoteID
 	if saved.RecoveryShipmentID != shipment.ID {
 		return PurchaseResult{}, errors.New("quote was not created for this shipment recovery")
 	}
+	if err := s.validateCurrentWarehouseBinding(ctx, quote, saved); err != nil {
+		return PurchaseResult{}, err
+	}
 	if err := s.validateStoredQuoteCarrier(ctx, order, quote, saved); err != nil {
 		return PurchaseResult{}, err
 	}
@@ -2001,7 +2008,7 @@ func (s *Service) CheckOMSSync(ctx context.Context, id string) (model.Shipment, 
 	if shipment.TrackingNumber == "" || len(shipment.PackageSNList) == 0 {
 		return shipment, errors.New("Temu 面单或跟踪号不完整，不能核对领星同步结果")
 	}
-	mapping, err := s.store.WarehouseMapping(ctx, shipment.OMSWarehouseKey)
+	mapping, err := s.store.PurchasedWarehouseMapping(shipment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return shipment, errors.New("当前业务仓未配置领星仓库代码")
 	}

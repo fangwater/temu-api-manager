@@ -337,7 +337,7 @@ func (s *Service) QuoteSubstitution(ctx context.Context, request SubstitutionPur
 	}
 	choiceAnalysis := buildLabelPurchaseChoice(candidates, choice, reason, request.PreferredChannelID != 0)
 	requestRecord, _ := json.Marshal(storedQuoteRequest{
-		Package: packageSpec, ShippingRequest: shippingRequest, SelectedChannel: choice.channel,
+		Package: packageSpec, ShippingRequest: shippingRequest, SelectedChannel: choice.channel, BindingRevision: mapped.BindingRevision,
 		ChoiceAnalysis: choiceAnalysis,
 		Substitution: &storedSubstitutionQuote{
 			CombinationID: combination.ID, PlatformSKU: platformSKU,

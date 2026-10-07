@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"temu-api-manager/internal/inventory"
 	"temu-api-manager/internal/model"
 	"temu-api-manager/migrations"
 
@@ -21,8 +22,11 @@ import (
 )
 
 type Postgres struct {
-	pool     *pgxpool.Pool
-	shopCode string
+	pool              *pgxpool.Pool
+	shopCode          string
+	warehouseBindings interface {
+		WarehouseBindings(context.Context, string, string) ([]inventory.WarehouseBinding, error)
+	}
 }
 
 var postgresSchemaPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -417,7 +421,7 @@ func logicalWarehouseKey(item model.Warehouse) string {
 	}
 }
 
-func (p *Postgres) ListWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
+func (p *Postgres) LegacyListWarehouses(ctx context.Context) ([]model.Warehouse, []model.WarehouseMapping, error) {
 	rows, err := p.pool.Query(ctx, `
 SELECT w.warehouse_id,w.warehouse_name,coalesce(w.region_id,0),w.enable_buy_shipping_label,
 w.default_warehouse,coalesce(w.warehouse_management_type,0),w.synced_at,
@@ -501,7 +505,7 @@ func (p *Postgres) DeleteWarehouseMapping(ctx context.Context, omsKey string) er
 	return err
 }
 
-func (p *Postgres) WarehouseMapping(ctx context.Context, omsKey string) (model.WarehouseMapping, error) {
+func (p *Postgres) LegacyWarehouseMapping(ctx context.Context, omsKey string) (model.WarehouseMapping, error) {
 	var m model.WarehouseMapping
 	err := p.pool.QueryRow(ctx, `
 SELECT m.oms_warehouse_key,coalesce(sw.warehouse_id,m.temu_warehouse_id),
@@ -519,7 +523,7 @@ WHERE m.oms_warehouse_key=$1
 	return m, err
 }
 
-func (p *Postgres) MappedWarehouse(ctx context.Context, omsKey string) (model.Warehouse, error) {
+func (p *Postgres) LegacyMappedWarehouse(ctx context.Context, omsKey string) (model.Warehouse, error) {
 	var w model.Warehouse
 	err := p.pool.QueryRow(ctx, `
 SELECT w.warehouse_id,w.warehouse_name,coalesce(w.region_id,0),w.enable_buy_shipping_label,

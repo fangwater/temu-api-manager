@@ -146,6 +146,7 @@ type SyncStatus struct {
 }
 
 type Warehouse struct {
+	BindingRevision        int64           `json:"binding_revision,omitempty"`
 	ID                     string          `json:"warehouse_id"`
 	Name                   string          `json:"warehouse_name"`
 	LogicalKey             string          `json:"logical_warehouse_key,omitempty"`
@@ -159,6 +160,7 @@ type Warehouse struct {
 }
 
 type WarehouseMapping struct {
+	Revision         int64     `json:"revision,omitempty"`
 	OMSKey           string    `json:"oms_warehouse_key"`
 	OMSWarehouseCode string    `json:"oms_warehouse_code"`
 	TemuWarehouseID  string    `json:"temu_warehouse_id"`

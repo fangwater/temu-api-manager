@@ -923,7 +923,7 @@ const omsWarehouses = [
   { key: "DPS004", name: "DPS004", region: "美西", code: "DPSCA004" },
   { key: "ARP_WEST", name: "ARP-洛杉矶", region: "西部", code: "ARPCA01" },
  {key:"ARP_HOUSTON",name:"ARP-休斯顿",region:"中部",code:"ARP06A"},
- {key:"ARP_ATLANTA",name:"ARP-亚特兰大（待上架）",region:"东部",code:"ARPGA",disabled:true},
+ {key:"ARP_ATLANTA",name:"ARP-亚特兰大",region:"东部",code:"ARPGA"},
 ];
 
 const omsAccounts = [
@@ -934,16 +934,9 @@ const omsAccounts = [
 function renderWarehouses() {
   const enabled = state.warehouses.filter((warehouse) => warehouse.enable_buy_shipping_label);
   const mappingByKey = Object.fromEntries(state.mappings.map((mapping) => [mapping.oms_warehouse_key, mapping]));
-  $("#warehouse-mappings").innerHTML = omsWarehouses.map((warehouse) => {
+  $("#warehouse-mappings").innerHTML = `<p>仓库配置统一在 XLWMS 管理，按当前店铺独立生效。</p><a class="primary-button" href="/warehouse-console/warehouses">打开仓库管理</a>` + omsWarehouses.map((warehouse) => {
     const mapping = mappingByKey[warehouse.key] || {};
-    return `<div class="mapping-row">
-      <div class="mapping-name"><strong>${warehouse.name}</strong><span>${warehouse.region} · 业务仓标识</span></div>
-      <label><span>领星账户</span><select data-oms-account="${warehouse.key}"><option value="">请选择账户</option>${omsAccounts.map((account) => `<option value="${account.key}" ${mapping.oms_account === account.key ? "selected" : ""}>${account.label}</option>`).join("")}</select></label>
-      <label><span>领星仓库代码</span><input data-oms-code="${warehouse.key}" value="${escapeHtml(mapping.oms_warehouse_code || warehouse.code)}" /></label>
-      <label><span>Temu Buy Label 仓库</span><select data-mapping-select="${warehouse.key}"><option value="">请选择仓库</option>${enabled.map((item) => `<option value="${escapeHtml(item.warehouse_id)}" ${mapping.temu_warehouse_id === item.warehouse_id ? "selected" : ""}>${escapeHtml(item.warehouse_name)} · ${escapeHtml(item.warehouse_id)}</option>`).join("")}</select></label>
-      <label class="mapping-enabled"><span>自动发货</span><span class="policy-switch"><input type="checkbox" data-mapping-enabled="${warehouse.key}" ${mapping.enabled === true ? "checked" : ""} aria-label="启用 ${escapeHtml(warehouse.name)} 自动发货"><span></span></span></label>
-      <button class="secondary-button" data-save-mapping="${warehouse.key}">保存</button>
-    </div>`;
+    return `<div class="mapping-row"><div class="mapping-name"><strong>${escapeHtml(warehouse.name)}</strong><span>${escapeHtml(mapping.oms_warehouse_code || warehouse.code)}</span></div><span>${escapeHtml(mapping.temu_warehouse_name || "待配置")}</span><span>${mapping.enabled === true ? "已启用" : "已暂停 / 待配置"}</span></div>`;
   }).join("");
   $("#warehouse-rows").innerHTML = state.warehouses.map((warehouse) => `<tr><td><strong>${escapeHtml(warehouse.warehouse_name)}</strong></td><td>${escapeHtml(warehouse.warehouse_id)}</td><td>${warehouse.region_id || "-"}</td><td>${warehouse.warehouse_management_type}</td><td><span class="status-badge ${warehouse.enable_buy_shipping_label ? "" : "neutral"}">${warehouse.enable_buy_shipping_label ? "支持" : "不支持"}</span></td></tr>`).join("");
   $("#warehouse-total").textContent = `${state.warehouses.length} 个仓库`;
@@ -979,7 +972,7 @@ function renderInventoryThresholds() {
   $("#inventory-threshold-rows").innerHTML = state.inventoryThresholds.map((item) => `
     <tr data-threshold-sku="${escapeHtml(item.warehouse_sku)}">
       <td><div class="sku-rule-identity"><code>${escapeHtml(item.warehouse_sku)}</code><span>${escapeHtml(item.product_name || "未记录商品名称")}</span></div></td>
-      ${omsWarehouses.map((warehouse) => `<td>${warehouse.disabled ? "待上架" : item.inventory_at ? escapeHtml(item.warehouse_available?.[warehouse.code] ?? 0) : "-"}</td>`).join("")}
+      ${omsWarehouses.map((warehouse) => `<td>${item.inventory_at ? escapeHtml(item.warehouse_available?.[warehouse.code] ?? 0) : "-"}</td>`).join("")}
       <td>${escapeHtml(item.total_available)}</td>
       <td>${item.total_inclusive ? "≤" : "<"} <input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="${escapeHtml(item.total_threshold)}" ${item.source === "oms_account" ? "disabled" : ""}></td>
       <td><span class="status-badge ${item.customized ? "pending" : "neutral"}">${escapeHtml(inventoryThresholdSource(item))}</span></td>

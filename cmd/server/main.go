@@ -81,6 +81,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			return err
 		}
 		shopLogger := logger.With("shop_code", shop.Code, "shop_name", shop.Name)
+		destination.SetWarehouseBindingSource(inventory.NewClient(cfg.WarehouseDecisionURL, cfg.RequestTimeout))
 		manager := service.NewForShop(
 			destination,
 			temuClient,
