@@ -941,7 +941,7 @@ function renderWarehouses() {
       <label><span>领星账户</span><select data-oms-account="${warehouse.key}"><option value="">请选择账户</option>${omsAccounts.map((account) => `<option value="${account.key}" ${mapping.oms_account === account.key ? "selected" : ""}>${account.label}</option>`).join("")}</select></label>
       <label><span>领星仓库代码</span><input data-oms-code="${warehouse.key}" value="${escapeHtml(mapping.oms_warehouse_code || warehouse.code)}" /></label>
       <label><span>Temu Buy Label 仓库</span><select data-mapping-select="${warehouse.key}"><option value="">请选择仓库</option>${enabled.map((item) => `<option value="${escapeHtml(item.warehouse_id)}" ${mapping.temu_warehouse_id === item.warehouse_id ? "selected" : ""}>${escapeHtml(item.warehouse_name)} · ${escapeHtml(item.warehouse_id)}</option>`).join("")}</select></label>
-      <label class="mapping-enabled"><span>自动发货</span><span class="policy-switch"><input type="checkbox" data-mapping-enabled="${warehouse.key}" ${mapping.enabled !== false ? "checked" : ""} aria-label="启用 ${escapeHtml(warehouse.name)} 自动发货"><span></span></span></label>
+      <label class="mapping-enabled"><span>自动发货</span><span class="policy-switch"><input type="checkbox" data-mapping-enabled="${warehouse.key}" ${mapping.enabled === true ? "checked" : ""} aria-label="启用 ${escapeHtml(warehouse.name)} 自动发货"><span></span></span></label>
       <button class="secondary-button" data-save-mapping="${warehouse.key}">保存</button>
     </div>`;
   }).join("");
