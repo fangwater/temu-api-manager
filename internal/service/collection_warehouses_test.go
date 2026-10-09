@@ -34,3 +34,14 @@ func TestHoustonCheaperForbiddenCarriersCannotEnterSelection(t *testing.T) {
 		t.Fatalf("invalid collection options: %+v", allowed)
 	}
 }
+
+func TestCollectionWarehouseSpeedXEntersAutomaticSelection(t *testing.T) {
+	for _, key := range []string{"ARP_HOUSTON", "ARP_ATLANTA"} {
+		rules := model.WarehouseCarrierRules{WarehouseKey: key, AllowedCarrierCodes: []string{"SPEEDX", "USPS"}, AllowedCurrencyCodes: []string{"USD"}}
+		channels := []temu.ShippingChannel{{ShippingCompanyName: "SpeedX", EstimatedAmount: "1", EstimatedCurrencyCode: "USD"}, {ShippingCompanyName: "YANWEN", EstimatedAmount: "0.50", EstimatedCurrencyCode: "USD"}, {ShippingCompanyName: "USPS", EstimatedAmount: "10", EstimatedCurrencyCode: "USD"}}
+		allowed, rejected := filterAutomaticChannels(channels, rules)
+		if len(allowed) != 2 || carrierCode(allowed[0]) != "SPEEDX" || len(rejected) != 1 {
+			t.Fatalf("%s rejected newly allowed SpeedX: %+v", key, allowed)
+		}
+	}
+}
