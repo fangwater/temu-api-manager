@@ -2358,8 +2358,13 @@ func temporaryFulfillmentError(err error) bool {
 		return false
 	}
 	var apiErr *temu.APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.Temporary || temu.IsRateLimitError(apiErr) || (apiErr.Code == "7000000" && strings.EqualFold(strings.TrimSpace(apiErr.Message), "BUSINESS_SERVICE_ERROR"))
+	if errors.As(err, &apiErr) && temu.IsTemporaryError(apiErr) {
+		return true
+	}
+	// A contextual wrapper may contain a join of warehouse errors. errors.As
+	// alone only finds the first APIError, which may be a permanent rejection.
+	if cause := errors.Unwrap(err); cause != nil {
+		return temporaryFulfillmentError(cause)
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true

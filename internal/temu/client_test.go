@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -51,6 +52,38 @@ func TestCallClassifiesRateLimitAndIncludesAPIType(t *testing.T) {
 	}
 	if apiErr.APIType != ShipmentResultAPI || !strings.Contains(err.Error(), ShipmentResultAPI) {
 		t.Fatalf("error must identify API type: %v", err)
+	}
+}
+
+func TestCallClassifiesTransientGatewayErrors(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		body      string
+		temporary bool
+	}{
+		{"internal system error", `{"success":false,"errorCode":4000000,"errorMsg":"Temu internal system error, please try again later."}`, true},
+		{"internal system error string code", `{"success":false,"errorCode":"4000000","errorMsg":"Temu internal system error, please try again later."}`, true},
+		{"business service unavailable", `{"success":false,"errorCode":7000000,"errorMsg":"BUSINESS_SERVICE_ERROR"}`, true},
+		{"unknown error with internal code", `{"success":false,"errorCode":4000000,"errorMsg":"invalid warehouse"}`, false},
+		{"business validation", `{"success":false,"errorCode":120012001,"errorMsg":"invalid package"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			_, err := NewClient(server.URL, "test-app", "test-secret", "test-token", time.Second).Call(context.Background(), ShippingServicesAPI, nil, nil)
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.Temporary != test.temporary {
+				t.Fatalf("temporary = %t, error = %v", test.temporary, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("API client must leave retries to the persisted job, calls = %d", calls.Load())
+			}
+		})
 	}
 }
 

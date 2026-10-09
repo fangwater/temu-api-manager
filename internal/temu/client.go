@@ -50,6 +50,18 @@ func IsRateLimitError(err error) bool {
 		strings.Contains(message, "too frequent requests") || strings.Contains(message, "rate limit")
 }
 
+// IsTemporaryError identifies gateway failures that can recover without changing
+// the order, warehouse, or shipping request. Business validation errors must stop.
+func IsTemporaryError(err *APIError) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.TrimSpace(err.Message)
+	return err.Temporary || IsRateLimitError(err) ||
+		(err.Code == "4000000" && strings.HasPrefix(strings.ToLower(message), "temu internal system error")) ||
+		(err.Code == "7000000" && strings.EqualFold(message, "BUSINESS_SERVICE_ERROR"))
+}
+
 type Client struct {
 	baseURL              string
 	documentProxyBaseURL string
@@ -182,7 +194,7 @@ func (c *Client) Call(ctx context.Context, apiType string, parameters map[string
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !envelope.Success {
 		apiErr := &APIError{APIType: apiType, Status: response.StatusCode, Code: rawScalar(envelope.ErrorCode), Message: envelope.ErrorMsg, Temporary: response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests}
-		apiErr.Temporary = apiErr.Temporary || IsRateLimitError(apiErr)
+		apiErr.Temporary = IsTemporaryError(apiErr)
 		return raw, apiErr
 	}
 	if result != nil && len(envelope.Result) > 0 && string(envelope.Result) != "null" {

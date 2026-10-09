@@ -1627,6 +1627,14 @@ CASE WHEN j.status IN ('confirming','waiting_label','running') THEN j.updated_at
 const autoFulfillmentRateLimitMarker = "%code=4000004%"
 const autoFulfillmentRateLimitBackoff = time.Minute
 
+// Include persisted errors from older service versions so an already-enqueued
+// order can recover without requiring another manual fulfillment request.
+var autoFulfillmentTransientErrorMarkers = []string{
+	autoFulfillmentRateLimitMarker,
+	"%code=4000000 msg=Temu internal system error%",
+	"%code=7000000 msg=BUSINESS_SERVICE_ERROR%",
+}
+
 func (p *Postgres) ClaimAutoFulfillments(ctx context.Context, retryBefore time.Time, limit int) ([]model.AutoFulfillmentJob, error) {
 	if limit < 1 || limit > 50 {
 		limit = 4
@@ -1636,12 +1644,16 @@ func (p *Postgres) ClaimAutoFulfillments(ctx context.Context, retryBefore time.T
 			SELECT j.parent_order_sn
 			FROM temu_auto_fulfillment_jobs j
 			JOIN temu_orders o ON o.parent_order_sn=j.parent_order_sn
-WHERE (j.status='queued' AND (j.last_error NOT LIKE $3 OR j.updated_at < $4))
+WHERE (j.status='queued' AND j.updated_at < CASE
+       WHEN j.last_error ILIKE ANY($3::text[]) THEN $4
+       WHEN j.last_error <> '' THEN $1
+       ELSE now()
+   END)
    OR (j.status='waiting_oms' AND j.updated_at < now()-interval '2 minutes')
-   OR (j.status IN ('waiting_label','confirming') AND j.updated_at < CASE WHEN j.last_error LIKE $3 THEN $4 ELSE $1 END)
+   OR (j.status IN ('waiting_label','confirming') AND j.updated_at < CASE WHEN j.last_error ILIKE ANY($3::text[]) THEN $4 ELSE $1 END)
    OR (j.status='running' AND j.updated_at < now()-interval '5 minutes')
-   OR (j.status='failed' AND j.last_error LIKE $3 AND j.updated_at < $4 AND (
-       j.shipment_id IS NULL OR EXISTS (
+   OR (j.status='failed' AND j.last_error ILIKE ANY($3::text[]) AND j.updated_at < $4 AND (
+       (j.shipment_id IS NULL AND o.is_open AND o.parent_order_status=2) OR EXISTS (
 SELECT 1 FROM temu_shipments retry_shipment
 WHERE retry_shipment.id=j.shipment_id
   AND retry_shipment.status IN ('submitting','label_pending','label_ready','confirm_failed','submission_unknown')
@@ -1680,7 +1692,7 @@ WHERE bulk_item.parent_order_sn=j.parent_order_sn
 		FROM picked WHERE j.parent_order_sn=picked.parent_order_sn
 		RETURNING j.parent_order_sn,j.fulfillment_mode,coalesce(j.shipment_id,''),j.status,j.attempts,j.last_error,
 			j.created_at,j.updated_at,j.started_at,j.completed_at
-	`, retryBefore, limit, autoFulfillmentRateLimitMarker, time.Now().Add(-autoFulfillmentRateLimitBackoff))
+	`, retryBefore, limit, autoFulfillmentTransientErrorMarkers, time.Now().Add(-autoFulfillmentRateLimitBackoff))
 	if err != nil {
 		return nil, err
 	}

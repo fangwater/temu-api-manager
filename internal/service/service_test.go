@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,8 +86,15 @@ func TestTemporaryFulfillmentError(t *testing.T) {
 		{name: "Temu transport timeout", err: &temu.APIError{Temporary: true, Message: "timeout"}, want: true},
 		{name: "Temu generic business service error", err: &temu.APIError{Code: "7000000", Message: "BUSINESS_SERVICE_ERROR"}, want: true},
 		{name: "Temu rate limit", err: &temu.APIError{Code: "4000004", Message: "too frequent requests"}, want: true},
+		{name: "Temu internal error", err: &temu.APIError{Code: "4000000", Message: "Temu internal system error, please try again later."}, want: true},
+		{name: "unknown error with same code", err: &temu.APIError{Code: "4000000", Message: "invalid warehouse"}, want: false},
 		{name: "wrapped Temu timeout", err: errors.Join(errors.New("warehouse unavailable"), &temu.APIError{Temporary: true, Message: "timeout"}), want: true},
 		{name: "temporary error after business error", err: errors.Join(&temu.APIError{Code: "40001", Message: "invalid request"}, &temu.APIError{Temporary: true, Message: "timeout"}), want: true},
+		{name: "wrapped mixed warehouse errors", err: fmt.Errorf("no automatic shipping option is available: %w", errors.Join(
+			fmt.Errorf("DPS002: %w", errors.New("insufficient stock")),
+			fmt.Errorf("ARP_EAST: %w", &temu.APIError{Code: "40001", Message: "invalid request"}),
+			fmt.Errorf("ARP_WEST: %w", &temu.APIError{Code: "4000000", Message: "Temu internal system error, please try again later."}),
+		)), want: true},
 		{name: "request deadline", err: context.DeadlineExceeded, want: true},
 		{name: "Temu business rejection", err: &temu.APIError{Code: "40001", Message: "invalid request"}, want: false},
 		{name: "local validation", err: errors.New("warehouse SKU is missing"), want: false},
