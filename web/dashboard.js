@@ -1200,25 +1200,8 @@ function regionDecisionItems(option) {
   }
 
   if (["ARP_HOUSTON","ARP_ATLANTA"].includes(option.warehouse_key)) return [{tone:option.ready ? "ready":"blocked",text:option.reason || option.error || "等待仓库上架及映射配置"}];
-  const dpsKey = option.region === "east" ? "DPS002" : "DPS004";
-  const arpKey = option.region === "east" ? "ARP_EAST" : "ARP_WEST";
-  const dpsName = previewWarehouse(dpsKey)?.warehouse_name || dpsKey;
-  const arpName = previewWarehouse(arpKey)?.warehouse_name || arpKey;
   if (!option.reason && option.error) return [{ tone: "blocked", text: option.error }];
-  const items = [];
-  if (option.warehouse_key === dpsKey) {
-    items.push({ tone: "ready", text: `${dpsName} 可独立覆盖整单全部 SKU` });
-    if (option.recommended) items.push({ tone: "selected", text: `规则默认优先 ${dpsName}，先清理 DPS 库存` });
-  } else if (option.warehouse_key === arpKey) {
-    items.push({ tone: "ready", text: `${arpName} 可独立覆盖整单全部 SKU` });
-    if (option.recommended) {
-      items.push({ tone: "warning", text: `${dpsName} 无法独立覆盖整单全部 SKU` });
-      items.push({ tone: "selected", text: `默认回退 ${arpName} 发货` });
-    } else {
-      items.push({ tone: "warning", text: `${dpsName} 同样可发，规则默认优先 DPS` });
-      items.push({ tone: "selected", text: `${arpName} 可人工改选` });
-    }
-  }
+  const items = [{ tone: "ready", text: `${option.warehouse_name || option.warehouse_key} 可独立覆盖整单全部 SKU` }];
   if (option.error) {
     items.push({ tone: "blocked", text: option.error });
   } else if (option.mapping?.ready) {
@@ -1330,18 +1313,24 @@ function renderWarehousePreview() {
   }).join("");
 
   const readyOptions = (preview.regions || []).filter((option) => option.ready);
-  const selectedOption = readyOptions.find((option) => option.recommended) || readyOptions[0];
-  $("#warehouse-region-options").innerHTML = (preview.regions || []).map((option) => {
+  const automaticOption = preview.ready ? `<label class="warehouse-region-choice ready selected">
+    <input type="radio" name="warehouse_key" value="" data-region="auto" form="quote-form" checked required />
+    <span class="region-radio"></span>
+    <div><small>默认推荐</small><strong>自动跨仓比价</strong><p>比较所有可发仓的实时运费，按当前快递规则选择</p></div>
+    <div class="mapping-state"><small>参与比价</small><strong>${readyOptions.length} 个可发仓</strong></div>
+  </label>` : "";
+  $("#warehouse-region-options").innerHTML = automaticOption + (preview.regions || []).map((option) => {
     const mappingText = option.mapping?.ready ? "Temu：" + option.mapping.warehouse_name : "Temu 仓未映射或已停用";
-    const checked = option === selectedOption;
     return `<label class="warehouse-region-choice ${option.ready ? "ready" : "blocked"}">
-      <input type="radio" name="warehouse_key" value="${escapeHtml(option.warehouse_key || "")}" data-region="${escapeHtml(option.region)}" form="quote-form" ${checked ? "checked" : ""} ${option.ready ? "required" : "disabled"} />
+      <input type="radio" name="warehouse_key" value="${escapeHtml(option.warehouse_key || "")}" data-region="${escapeHtml(option.region)}" form="quote-form" ${preview.ready && option.ready ? "required" : "disabled"} />
       <span class="region-radio"></span>
-      <div><small>${escapeHtml(option.region_name)}${option.recommended ? " · 默认推荐" : ""}</small><strong>${escapeHtml(option.warehouse_name || option.warehouse_key || "不可自动发货")}</strong>${renderDecisionPoints(regionDecisionItems(option))}</div>
+      <div><small>${escapeHtml(option.region_name)}${option.ready ? " · 指定仓库" : ""}</small><strong>${escapeHtml(option.warehouse_name || option.warehouse_key || "不可自动发货")}</strong>${renderDecisionPoints(regionDecisionItems(option))}</div>
       <div class="mapping-state"><small>${escapeHtml(option.warehouse_key || "-")}</small><strong>${escapeHtml(mappingText)}</strong></div>
     </label>`;
   }).join("");
   $$('input[name="warehouse_key"][form="quote-form"]').forEach((input) => input.addEventListener("change", () => {
+    state.quoteController?.abort();
+    state.quoteSequence += 1;
     state.quote = null;
     $("#quote-result").hidden = true;
     $$(".warehouse-region-choice").forEach((item) => item.classList.toggle("selected", item.contains(input) && input.checked));
@@ -1376,7 +1365,9 @@ function renderWarehousePreview() {
 function quoteRequest(preferredChannelId = 0) {
   const form = new FormData($("#quote-form"));
   const selected = $('input[name="warehouse_key"][form="quote-form"]:checked');
-  return { parent_order_sn: state.currentOrder.parent_order_sn, region: selected?.dataset.region || "", warehouse_key: form.get("warehouse_key"), preferred_channel_id: preferredChannelId };
+  const warehouseKey = preferredChannelId && state.quote ? state.quote.quote.oms_warehouse_key : form.get("warehouse_key");
+  const region = preferredChannelId && state.quote ? state.quote.warehouse_selection.region : selected?.dataset.region || "auto";
+  return { parent_order_sn: state.currentOrder.parent_order_sn, region, warehouse_key: warehouseKey || "", preferred_channel_id: preferredChannelId };
 }
 
 function setQuoteStatus(tone, text) {
@@ -1434,7 +1425,8 @@ function renderQuote() {
   setQuoteStatus("ready", "物流渠道已自动查询完成");
   $("#quote-result").hidden = false;
   const previewRegion = (state.warehousePreview?.regions || []).find((item) => item.warehouse_key === data.warehouse_selection.warehouse_key);
-  const decisionItems = previewRegion ? regionDecisionItems(previewRegion) : [{ tone: "selected", text: data.warehouse_selection.reason }];
+  const decisionItems = previewRegion ? regionDecisionItems(previewRegion) : [];
+  decisionItems.push({ tone: "selected", text: data.warehouse_selection.reason });
   $("#warehouse-decision").innerHTML = `<strong>${escapeHtml(data.warehouse_selection.warehouse_name)}</strong> → ${escapeHtml(data.temu_warehouse.warehouse_name)}${renderDecisionPoints(decisionItems)}`;
   $("#quote-expiry").textContent = `报价有效至 ${formatTime(data.quote.expires_at)}`;
   $("#channel-count").textContent = "Temu 共返回 " + (availableChannels.length + unavailableChannels.length) + " 个渠道：" + availableChannels.length + " 个可用，" + unavailableChannels.length + " 个不可用";

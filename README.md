@@ -122,6 +122,14 @@ the service checks current SKU restrictions and the saved channel against the
 current warehouse carrier capability. The pending Atlanta registration remains
 disabled independently of SKU rules.
 
+The fulfillment dialog defaults to automatic cross-warehouse comparison. Its
+quote request uses `region=auto` without a warehouse constraint, so every eligible
+warehouse participates in the existing carrier selection rules. Selecting a
+physical warehouse explicitly limits quotes to that warehouse. Selecting another
+carrier after a quote keeps that quote's warehouse, even in automatic mode, since
+Temu channel IDs can be shared across warehouses. Refreshing inventory restores
+automatic comparison; recovery quotes follow the same behavior.
+
 ## Label Purchase Price Analysis
 
 The Go fulfillment service stores a new, immutable price snapshot when a quote
