@@ -51,6 +51,7 @@ type Service struct {
 	quoteLifetime time.Duration
 	logger        *slog.Logger
 	syncMu        sync.Mutex
+	salesSyncMu   sync.Mutex
 }
 
 func New(destination *store.Postgres, temuClient *temu.Client, inventoryClient *inventory.Client, omsClient *oms.Client, quoteLifetime time.Duration, logger *slog.Logger) *Service {

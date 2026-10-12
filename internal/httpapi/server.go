@@ -57,6 +57,7 @@ func New(service *service.Service, operationKey, storeCode, storeName, staticRoo
 	mux.HandleFunc("GET /api/combined-shipment-candidates", s.combinedShipmentCandidates)
 	mux.HandleFunc("GET /api/orders/history", s.listOrderHistory)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/detail", s.getOrderDetail)
+	mux.HandleFunc("GET /api/sales-sync/status", s.salesSyncStatus)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/shipment", s.getOrderShipment)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}/tracking", s.orderTracking)
 	mux.HandleFunc("GET /api/orders/{parentOrderSN}", s.getOrder)
@@ -1208,4 +1209,15 @@ func pagination(r *http.Request) (int, int) {
 		pageSize = 30
 	}
 	return page, pageSize
+}
+
+func (s *Server) salesSyncStatus(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := s.context(r)
+	defer cancel()
+	state, err := s.service.SalesSyncStatus(ctx)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response{Success: true, Data: state})
 }

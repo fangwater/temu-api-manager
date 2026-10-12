@@ -94,6 +94,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		)
 		handlers[shop.Code] = httpapi.New(manager, cfg.OperationKey, shop.Code, shop.Name, cfg.StaticRoot, cfg.RequestTimeout, shopLogger)
 		go backgroundSync(ctx, manager, cfg.OrderSyncInterval, cfg.RequestTimeout, shopLogger)
+		go backgroundSalesSync(ctx, manager, shopLogger)
 		go backgroundOMSQuery(ctx, manager, cfg.OMSQueryInterval, cfg.RequestTimeout, shopLogger)
 		go backgroundPickupAudits(ctx, manager, shop.Code, shop.Name, cfg.PickupAuditInterval, cfg.RequestTimeout*10, shopLogger)
 		go backgroundBulkFulfillment(ctx, manager, cfg.FulfillmentInterval, cfg.RequestTimeout, cfg.FulfillmentConcurrency, shopLogger)
@@ -294,4 +295,32 @@ func requireLoopback(address string) error {
 		return errors.New("TEMU_LISTEN must use a loopback address")
 	}
 	return nil
+}
+
+func backgroundSalesSync(ctx context.Context, manager *service.Service, logger *slog.Logger) {
+	failures := 0
+	for {
+		work, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		err := manager.SyncSalesOrders(work)
+		cancel()
+		delay := time.Minute
+		if err != nil {
+			failures++
+			if failures > 5 {
+				failures = 5
+			}
+			delay = time.Duration(1<<failures) * time.Minute
+			logger.Warn("sales order reconciliation failed", "error", err, "retry_after", delay)
+		} else {
+			failures = 0
+			logger.Info("sales order reconciliation advanced")
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }

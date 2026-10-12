@@ -465,3 +465,33 @@ WHERE ((warehouse_id='WH-10610323701891516' AND warehouse_name='ARP-休斯顿6�
  OR (warehouse_id='WH-10610247352452545' AND warehouse_name='ARP-休斯顿仓库')) AND enable_buy_shipping_label
 ORDER BY CASE warehouse_id WHEN 'WH-10610323701891516' THEN 0 ELSE 1 END LIMIT 1
 ON CONFLICT(oms_warehouse_key) DO NOTHING;
+
+-- Sales reconciliation is independent of the fulfillment queue.
+CREATE TABLE IF NOT EXISTS temu_sales_orders (
+ parent_order_sn text PRIMARY KEY,
+ order_time timestamptz NOT NULL,
+ source_update_time bigint NOT NULL DEFAULT 0,
+ parent_order_status integer NOT NULL,
+ payload jsonb NOT NULL,
+ first_seen_at timestamptz NOT NULL DEFAULT now(),
+ fetched_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS temu_sales_orders_fetched_idx ON temu_sales_orders(fetched_at);
+CREATE INDEX IF NOT EXISTS temu_sales_orders_time_idx ON temu_sales_orders(order_time);
+CREATE TABLE IF NOT EXISTS temu_sales_sync_state (
+ id integer PRIMARY KEY CHECK(id=1),
+ watermark timestamptz,
+ reconcile_before timestamptz,
+ reconcile_floor timestamptz,
+ last_reconciled_at timestamptz,
+ last_success_at timestamptz,
+ last_error text NOT NULL DEFAULT '',
+ failure_count integer NOT NULL DEFAULT 0,
+ checked_orders integer NOT NULL DEFAULT 0
+);
+INSERT INTO temu_sales_sync_state(id) VALUES(1) ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='pangu_reader') THEN
+  GRANT SELECT ON temu_sales_orders,temu_sales_sync_state TO pangu_reader;
+ END IF;
+END $$;
