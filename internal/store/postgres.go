@@ -400,6 +400,9 @@ warehouse_id=EXCLUDED.warehouse_id,synced_at=now()
 func logicalWarehouseKey(item model.Warehouse) string {
 	name := strings.ToUpper(strings.TrimSpace(item.Name + " " + item.ID))
 	switch {
+	case strings.Contains(name, "ARP03") || item.ID == "WH-02943791390851516" || item.ID == "WH-02943773573252545" ||
+		(strings.Contains(name, "ARP") && (strings.Contains(name, "休斯顿13号仓") || strings.Contains(name, "休斯顿13仓"))):
+		return "ARP_HOUSTON_13"
 	case strings.Contains(name, "ARP06A") || item.ID == "WH-10610323701891516" || item.ID == "WH-10610247352452545":
 		return "ARP_HOUSTON"
 	case strings.Contains(name, "ARPGA"):

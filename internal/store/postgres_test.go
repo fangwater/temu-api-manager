@@ -27,6 +27,9 @@ func TestLogicalWarehouseKey(t *testing.T) {
 		{name: "DPSCA004美西", want: "DPS004"},
 		{name: "ARP 美仓-美东仓", want: "ARP_EAST"},
 		{name: "ARP WEST", want: "ARP_WEST"},
+		{name: "ARP13号仓-美中TX ARP03", want: "ARP_HOUSTON_13"},
+		{name: "ARP-休斯顿13号仓", want: "ARP_HOUSTON_13"},
+		{name: "ARP-休斯顿13仓", want: "ARP_HOUSTON_13"},
 		{name: "PG1955", want: "PG1955"},
 		{name: "PA30", want: "PA30"},
 	}

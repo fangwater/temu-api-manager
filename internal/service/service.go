@@ -662,7 +662,7 @@ func (s *Service) DeleteWarehouseMapping(ctx context.Context, omsKey string) err
 	return s.store.DeleteWarehouseMapping(ctx, omsKey)
 }
 
-var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}
+var supportedOMSWarehouseKeys = []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA", "ARP_HOUSTON_13"}
 
 func (s *Service) carrierPoliciesByWarehouse(ctx context.Context, warehouseSKU string) (map[string]model.WarehouseCarrierPolicies, error) {
 	groups, err := s.inventory.CarrierPolicies(ctx, "temu", warehouseSKU)
@@ -1151,9 +1151,9 @@ func quoteWarehouseKeys(region, preferred string) ([]string, error) {
 	case "west":
 		return []string{"DPS004", "ARP_WEST"}, nil
 	case "central":
-		return []string{"ARP_HOUSTON"}, nil
+		return []string{"ARP_HOUSTON", "ARP_HOUSTON_13"}, nil
 	case "auto", "":
-		return []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}, nil
+		return append([]string(nil), supportedOMSWarehouseKeys...), nil
 	default:
 		return nil, errors.New("region must be east, west, central, or auto")
 	}
@@ -1181,7 +1181,7 @@ func warehouseRegion(key string) string {
 		return "east"
 	case "DPS004", "ARP_WEST":
 		return "west"
-	case "ARP_HOUSTON":
+	case "ARP_HOUSTON", "ARP_HOUSTON_13":
 		return "central"
 	default:
 		return ""

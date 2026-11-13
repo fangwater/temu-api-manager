@@ -43,3 +43,11 @@ func TestPurchasedWarehouseKeepsPhysicalIdentityAfterPause(t *testing.T) {
 		t.Fatal("bought label depends on current mapping")
 	}
 }
+
+func TestHouston13PurchasedWarehouseKeepsPhysicalIdentityAfterPause(t *testing.T) {
+	p := &Postgres{warehouseBindings: &warehouseSourceFake{fail: true}}
+	b, err := p.PurchasedWarehouseMapping(model.Shipment{OMSWarehouseKey: "ARP_HOUSTON_13", WarehouseID: "WH-ORIGINAL-13"})
+	if err != nil || b.OMSWarehouseCode != "ARP03" || b.TemuWarehouseID != "WH-ORIGINAL-13" {
+		t.Fatalf("warehouse 13 bought label physical identity is incorrect: %+v, %v", b, err)
+	}
+}

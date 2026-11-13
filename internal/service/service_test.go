@@ -581,7 +581,7 @@ func TestQuoteWarehouseKeysAutoIncludesAllBusinessWarehousesInOrder(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA"}
+	want := []string{"DPS002", "ARP_EAST", "DPS004", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA", "ARP_HOUSTON_13"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
@@ -617,7 +617,7 @@ func TestFulfillmentInventoryReservationRequestUsesPhysicalWarehouseCapacity(t *
 }
 
 func TestWarehouseRegionMapsAutomaticCandidates(t *testing.T) {
-	cases := map[string]string{"DPS002": "east", "ARP_EAST": "east", "DPS004": "west", "ARP_WEST": "west"}
+	cases := map[string]string{"DPS002": "east", "ARP_EAST": "east", "DPS004": "west", "ARP_WEST": "west", "ARP_HOUSTON": "central", "ARP_HOUSTON_13": "central"}
 	for warehouse, want := range cases {
 		if got := warehouseRegion(warehouse); got != want {
 			t.Fatalf("warehouseRegion(%q)=%q, want %q", warehouse, got, want)

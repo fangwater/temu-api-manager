@@ -36,7 +36,7 @@ func TestHoustonCheaperForbiddenCarriersCannotEnterSelection(t *testing.T) {
 }
 
 func TestCollectionWarehouseSpeedXEntersAutomaticSelection(t *testing.T) {
-	for _, key := range []string{"ARP_HOUSTON", "ARP_ATLANTA"} {
+	for _, key := range []string{"ARP_HOUSTON", "ARP_ATLANTA", "ARP_HOUSTON_13"} {
 		rules := model.WarehouseCarrierRules{WarehouseKey: key, AllowedCarrierCodes: []string{"SPEEDX", "USPS"}, AllowedCurrencyCodes: []string{"USD"}}
 		channels := []temu.ShippingChannel{{ShippingCompanyName: "SpeedX", EstimatedAmount: "1", EstimatedCurrencyCode: "USD"}, {ShippingCompanyName: "YANWEN", EstimatedAmount: "0.50", EstimatedCurrencyCode: "USD"}, {ShippingCompanyName: "USPS", EstimatedAmount: "10", EstimatedCurrencyCode: "USD"}}
 		allowed, rejected := filterAutomaticChannels(channels, rules)

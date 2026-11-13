@@ -924,6 +924,7 @@ const omsWarehouses = [
   { key: "ARP_WEST", name: "ARP-洛杉矶", region: "西部", code: "ARPCA01" },
  {key:"ARP_HOUSTON",name:"ARP-休斯顿",region:"中部",code:"ARP06A"},
  {key:"ARP_ATLANTA",name:"ARP-亚特兰大",region:"东部",code:"ARPGA"},
+ {key:"ARP_HOUSTON_13",name:"ARP-休斯顿13号仓",region:"中部",code:"ARP03"},
 ];
 
 const omsAccounts = [
@@ -1199,7 +1200,7 @@ function regionDecisionItems(option) {
     return [{ tone: "blocked", text: option.error || "该区域没有可覆盖整单的仓库" }];
   }
 
-  if (["ARP_HOUSTON","ARP_ATLANTA"].includes(option.warehouse_key)) return [{tone:option.ready ? "ready":"blocked",text:option.reason || option.error || "等待仓库上架及映射配置"}];
+  if (["ARP_HOUSTON","ARP_ATLANTA","ARP_HOUSTON_13"].includes(option.warehouse_key)) return [{tone:option.ready ? "ready":"blocked",text:option.reason || option.error || "仓库映射未配置"}];
   if (!option.reason && option.error) return [{ tone: "blocked", text: option.error }];
   const items = [{ tone: "ready", text: `${option.warehouse_name || option.warehouse_key} 可独立覆盖整单全部 SKU` }];
   if (option.error) {
@@ -1308,6 +1309,7 @@ function renderWarehousePreview() {
       <td>${stockCell(inventoryWarehouse(record, "ARP_WEST"))}</td>
  <td>${stockCell(inventoryWarehouse(record, "ARP_HOUSTON"))}</td>
  <td>${stockCell(inventoryWarehouse(record, "ARP_ATLANTA"))}</td>
+ <td>${stockCell(inventoryWarehouse(record, "ARP_HOUSTON_13"))}</td>
       <td>${conclusion}</td>
     </tr>`;
   }).join("");

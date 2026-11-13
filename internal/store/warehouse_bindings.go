@@ -63,7 +63,7 @@ func (p *Postgres) MappedWarehouse(ctx context.Context, key string) (model.Wareh
 
 // Fulfillment after purchase follows immutable physical identity from the quote.
 func (p *Postgres) PurchasedWarehouseMapping(shipment model.Shipment) (model.WarehouseMapping, error) {
-	codes := map[string]string{"DPS002": "DPSNY002", "DPS004": "DPSCA004", "ARP_EAST": "HYTX30", "ARP_WEST": "ARPCA01", "ARP_HOUSTON": "ARP06A", "ARP_ATLANTA": "ARPGA"}
+	codes := map[string]string{"DPS002": "DPSNY002", "DPS004": "DPSCA004", "ARP_EAST": "HYTX30", "ARP_WEST": "ARPCA01", "ARP_HOUSTON": "ARP06A", "ARP_ATLANTA": "ARPGA", "ARP_HOUSTON_13": "ARP03"}
 	code := codes[shipment.OMSWarehouseKey]
 	if code == "" {
 		return model.WarehouseMapping{}, pgx.ErrNoRows
